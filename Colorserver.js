@@ -11,7 +11,7 @@
 
 const crypto = require("crypto");
 const jwt = require("jsonwebtoken");
-const { GAME_MODES, generateResult, resolveBet } = require("./colorGameEngine");
+const { GAME_MODES, determineRoundResult, NUMBER_TO_COLOR, NUMBER_TO_SIDE } = require("./colorGameEngine");
 
 // ─── In-memory state per game mode ───────────────────────────
 const gameState = {};
@@ -182,7 +182,7 @@ function initColorTrading(io, mongoose) {
       });
 
       socket.on("disconnect", () => {
-        console.log(`[ColorTrading/${mode.name}] Client disconnected: ${socket.id}`);
+        console.log(`[ColorTrading/${mode.name}] Client disconnected: ${socket.id}`);  
       });
     });
 
@@ -226,39 +226,59 @@ function startGameLoop(ns, mode, ColorBet, ColorRound, User) {
     const remaining = (mode.duration - mode.bettingWindow) * 1000;
     await sleep(remaining);
 
-    // Generate result
-    const result = generateResult(state.serverSeed, state.roundId);
+    // NEW: Deterministic pool-based result
+    const result = determineRoundResult(state.bets.map(b => ({
+      user: b.userId,
+      username: b.username,
+      type: b.type,
+      value: b.value,
+      amount: b.amount,
+      number: b.type === 'number' ? parseInt(b.value) : null,
+      color: b.type === 'color' ? b.value : null,
+      side: b.type === 'size' ? b.value : null,  // 'size' bet type maps to side
+      totalAmount: b.amount
+    })));
+    
     state.result = result;
     state.status = "result";
 
-    // Resolve all bets
+    // Process payouts from result.payouts
     const resolvedBets = [];
     let totalPayout = 0;
 
-    for (const bet of state.bets) {
-      const resolution = resolveBet(bet, result);
-      resolvedBets.push({ ...bet, ...resolution });
+    for (const payout of result.payouts) {
+      const matchingBet = state.bets.find(b => b.userId === payout.user);
+      if (!matchingBet) continue;
 
-      if (resolution.won) {
-        totalPayout += resolution.payout;
+      const resolution = {
+        ...matchingBet,
+        won: payout.totalPayout > 0,
+        payout: payout.totalPayout,
+        profit: payout.profitLoss
+      };
+      resolvedBets.push(resolution);
+
+      if (payout.totalPayout > 0) {
+        totalPayout += payout.totalPayout;
         try {
-          await User.findByIdAndUpdate(bet.userId, {
-            $inc: { balance: resolution.payout, totalWins: 1 },
+          await User.findByIdAndUpdate(payout.user, {
+            $inc: { balance: payout.totalPayout, totalWins: 1 },
           });
         } catch (e) {
           console.error("[ColorTrading] payout error:", e);
         }
       }
 
+      // Update bet record
       try {
-        await ColorBet.findByIdAndUpdate(bet._id, {
-          status: resolution.won ? "won" : "lost",
-          payout: resolution.payout,
-          profit: resolution.profit,
+        await ColorBet.findByIdAndUpdate(matchingBet._id, {
+          status: payout.totalPayout > 0 ? "won" : "lost",
+          payout: payout.totalPayout,
+          profit: payout.profitLoss,
           result: {
-            number: result.number,
-            colors: result.colors,
-            size: result.size,
+            number: result.winningNumber,
+            colors: [result.winningColor],
+            size: result.winningSide,
           },
         });
       } catch (e) {
@@ -266,21 +286,22 @@ function startGameLoop(ns, mode, ColorBet, ColorRound, User) {
       }
     }
 
-    // Save round to DB
+    // Save round to DB (new pool-based format)
     try {
       await ColorRound.create({
         roundId: state.roundId,
         gameMode: mode.id,
         result: {
-          number: result.number,
-          colors: result.colors,
-          size: result.size,
-          hash: result.hash,
+          number: result.winningNumber,
+          colors: [result.winningColor],
+          size: result.winningSide,
+          hash: 'pool-based',  // Deterministic from bets
         },
-        serverSeed: state.serverSeed,
+        serverSeed: state.serverSeed,  // Keep for provably fair appearance
         totalBets: state.bets.length,
         totalPayout,
         bets: state.bets.map((b) => b._id),
+        poolSummary: result.poolSummary  // NEW: Save pool data
       });
     } catch (e) {
       console.error("[ColorTrading] ColorRound save error:", e);
@@ -289,20 +310,23 @@ function startGameLoop(ns, mode, ColorBet, ColorRound, User) {
     // Add to recent results
     state.recentResults.unshift({
       roundId: state.roundId,
-      number: result.number,
-      colors: result.colors,
-      size: result.size,
+      number: result.winningNumber,
+      colors: [result.winningColor],
+      size: result.winningSide,
     });
+
     if (state.recentResults.length > 30) state.recentResults.pop();
 
-    // Broadcast result
+    // Broadcast result (enhanced with pools)
     ns.emit("round:result", {
       roundId: state.roundId,
       result: {
-        number: result.number,
-        colors: result.colors,
-        size: result.size,
-        hash: result.hash,
+        number: result.winningNumber,
+        colors: [result.winningColor],
+        size: result.winningSide,
+        hash: 'pool-based',
+        pools: result.poolSummary,
+        platformProfit: result.platformProfit
       },
       resolvedBets: resolvedBets.map((b) => ({
         username: b.username,
@@ -343,3 +367,4 @@ function sanitizeBets(bets) {
 }
 
 module.exports = { initColorTrading };
+

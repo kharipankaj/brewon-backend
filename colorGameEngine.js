@@ -18,9 +18,27 @@ const NUMBER_TO_SIDE = {
 
 // ─── Main Function ────────────────────────────────────────────
 function determineRoundResult(bets) {
-  if (!Array.isArray(bets) || bets.length === 0) {
-    throw new Error('bets must be non-empty array');
+  if (!Array.isArray(bets)) {
+    return {
+      winningNumber: 0,
+      winningColor: NUMBER_TO_COLOR[0],
+      winningSide: NUMBER_TO_SIDE[0],
+      poolSummary: { numberPool: {total:0,platformCut:0}, colorPool: {total:0,platformCut:0}, sidePool: {total:0,platformCut:0} },
+      platformProfit: {total: 0},
+      payouts: []
+    };
   }
+  if (bets.length === 0) {
+    return {
+      winningNumber: 0,
+      winningColor: NUMBER_TO_COLOR[0],
+      winningSide: NUMBER_TO_SIDE[0],
+      poolSummary: { numberPool: {total:0,platformCut:0}, colorPool: {total:0,platformCut:0}, sidePool: {total:0,platformCut:0} },
+      platformProfit: {total: 0},
+      payouts: []
+    };
+  }
+
 
   // Step 1: Aggregate total bets per number (0-9), count unique bettors
   const numberTotals = Array(10).fill(0).map(() => ({ amount: 0, bettors: new Set() }));
@@ -237,15 +255,48 @@ const GAME_MODES = {
   fastparity: { id: 'fastparity', duration: 10, bettingWindow: 7 }
 };
 
-// Legacy exports for compatibility
+// ─── Exports ────────────────────────────────────────────────────
 module.exports = {
   GAME_MODES,
   NUMBER_TO_COLOR,
   NUMBER_TO_SIDE,
-  determineRoundResult, // NEW PRIMARY
-  // generateResult: () => {}, // deprecated
-  // resolveBet: () => {}, // deprecated
+  determineRoundResult, // NEW PRIMARY (uses bets for deterministic result)
+  
+  // Legacy compatibility wrappers (for colorServer.js)
+  generateResult(serverSeed, roundId) {
+    // Deterministic hash → number 0-9 from seed (for compatibility)
+    const hash = crypto.createHash('sha256')
+      .update(serverSeed + roundId.toString())
+      .digest('hex');
+    const num = parseInt(hash.slice(0, 2), 16) % 10;
+    return {
+      number: num,
+      colors: [NUMBER_TO_COLOR[num]],
+      size: NUMBER_TO_SIDE[num],
+      hash: hash.slice(0, 16)
+    };
+  },
+  
+  resolveBet(bet, result) {
+    // Legacy single bet resolver (multiplied by 9.0x for color/number/size)
+    const matchers = {
+      number: bet.type === 'number' && parseInt(bet.value) === result.number,
+      color: bet.type === 'color' && bet.value === result.colors[0],
+      size: bet.type === 'size' && bet.value === result.size
+    };
+    
+    const won = matchers[bet.type];
+    const multiplier = 9.0;
+    const payout = won ? Math.round(bet.amount * multiplier * 100) / 100 : 0;
+    
+    return {
+      won,
+      payout,
+      profit: payout - bet.amount
+    };
+  }
 };
+
 
 // ─── Run tests if direct ──────────────────────────────────────
 if (require.main === module) {
