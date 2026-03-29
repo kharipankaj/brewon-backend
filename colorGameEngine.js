@@ -1,6 +1,6 @@
 /**
  * Brewon Color Trading Game Engine - EXACT SPEC IMPLEMENTATION
- * Standalone determineRoundResult(bets) + 3 test cases
+ * Standalone determineRoundResult(bets, previousWinner) + tests for exclusions/no-repeat
  */
 
 const crypto = require('crypto'); // for random tiebreaker
@@ -16,31 +16,36 @@ const NUMBER_TO_SIDE = {
   5: 'Big',   6: 'Big',   7: 'Big',   8: 'Big',   9: 'Big'
 };
 
+// VALID NUMBERS: Exclude 0,5 per task requirement
+const VALID_NUMBERS = [1,2,3,4,6,7,8,9];
+
 // ─── Main Function ────────────────────────────────────────────
-function determineRoundResult(bets) {
+function determineRoundResult(bets, previousWinner = null) {
   if (!Array.isArray(bets)) {
     return {
-      winningNumber: 0,
-      winningColor: NUMBER_TO_COLOR[0],
-      winningSide: NUMBER_TO_SIDE[0],
+      winningNumber: VALID_NUMBERS[0],
+      winningColor: NUMBER_TO_COLOR[VALID_NUMBERS[0]],
+      winningSide: NUMBER_TO_SIDE[VALID_NUMBERS[0]],
       poolSummary: { numberPool: {total:0,platformCut:0}, colorPool: {total:0,platformCut:0}, sidePool: {total:0,platformCut:0} },
       platformProfit: {total: 0},
       payouts: []
     };
   }
   if (bets.length === 0) {
+    // Pick random valid if no bets
+    const randIdx = Math.floor(Math.random() * VALID_NUMBERS.length);
+    const winningNumber = VALID_NUMBERS[randIdx];
     return {
-      winningNumber: 0,
-      winningColor: NUMBER_TO_COLOR[0],
-      winningSide: NUMBER_TO_SIDE[0],
+      winningNumber,
+      winningColor: NUMBER_TO_COLOR[winningNumber],
+      winningSide: NUMBER_TO_SIDE[winningNumber],
       poolSummary: { numberPool: {total:0,platformCut:0}, colorPool: {total:0,platformCut:0}, sidePool: {total:0,platformCut:0} },
       platformProfit: {total: 0},
       payouts: []
     };
   }
 
-
-  // Step 1: Aggregate total bets per number (0-9), count unique bettors
+  // Step 1: Aggregate total bets per number (0-9), but only VALID_NUMBERS matter
   const numberTotals = Array(10).fill(0).map(() => ({ amount: 0, bettors: new Set() }));
   
   // Track bets by color and side for winners
@@ -84,19 +89,19 @@ function determineRoundResult(bets) {
       sidPool = side !== null ? split : 0;
     }
 
-    // Number pool (always contributes if bet)
-    if (numPool > 0 && number !== null) {
+    // Number pool (track all, but only valid contribute to candidates)
+    if (numPool > 0 && number !== null && number >= 0 && number <= 9) {
       numberTotals[number].amount += numPool;
       numberTotals[number].bettors.add(user);
     }
 
-    // Color pool
-    if (colPool > 0 && color !== null) {
+    // Color pool - safe push
+    if (colPool > 0 && color !== null && colorBets[color]) {
       colorBets[color].push({ user, amount: colPool });
     }
 
-    // Side pool
-    if (sidPool > 0 && side !== null) {
+    // Side pool - safe push
+    if (sidPool > 0 && side !== null && sideBets[side]) {
       sideBets[side].push({ user, amount: sidPool });
     }
   });
@@ -106,47 +111,55 @@ function determineRoundResult(bets) {
     numberTotals[i].bettors = numberTotals[i].bettors.size;
   }
 
-  // Step 3: Select winningNumber
-  // Priority: 0-amount nums first, then normal
+  // Step 3: Select winningNumber - ONLY from VALID_NUMBERS
+  // Priority: 0-amount nums first, then normal - EXCLUDE previousWinner in ties
   let candidates = [];
   
-  // Zero-amount first (highest priority)
-  for (let i = 0; i < 10; i++) {
-    if (numberTotals[i].amount === 0) {
-      candidates.push({ num: i, amount: 0, bettors: numberTotals[i].bettors, idx: i });
+  // Zero-amount first (highest priority) - only valid numbers
+  for (const num of VALID_NUMBERS) {
+    if (numberTotals[num].amount === 0) {
+      candidates.push({ num, amount: 0, bettors: numberTotals[num].bettors, idx: num });
     }
   }
   
-  // If no zeros, all others
+  // If no zeros in valid, lowest amount in valid
   if (candidates.length === 0) {
-    for (let i = 0; i < 10; i++) {
-      if (numberTotals[i].amount > 0) {
-        candidates.push({ num: i, amount: numberTotals[i].amount, bettors: numberTotals[i].bettors, idx: i });
+    for (const num of VALID_NUMBERS) {
+      if (numberTotals[num].amount > 0) {
+        candidates.push({ num, amount: numberTotals[num].amount, bettors: numberTotals[num].bettors, idx: num });
       }
     }
   }
   
-  // Sort: amount ASC, bettors ASC, idx as tiebreaker (random-like via original order)
-  candidates.sort((a, b) => {
-    if (a.amount !== b.amount) return a.amount - b.amount;
-    if (a.bettors !== b.bettors) return a.bettors - b.bettors;
+  if (candidates.length === 0) {
+    // Fallback: random valid
+    const randIdx = Math.floor(Math.random() * VALID_NUMBERS.length);
+    candidates = [{ num: VALID_NUMBERS[randIdx], amount: Infinity, bettors: 0, idx: VALID_NUMBERS[randIdx] }];
+  }
+  
+// ALWAYS penalize previousWinner to avoid repeat (even unique lowest)
+// Create penalized sort keys
+  const penalizedCandidates = candidates.map(c => {
+    if (previousWinner !== null && c.num === previousWinner) {
+      return { ...c, sortAmount: c.amount + 0.001, sortBettors: c.bettors + 0.001 };
+    }
+    return { ...c, sortAmount: c.amount, sortBettors: c.bettors };
+  });
+
+  // Sort penalized
+  penalizedCandidates.sort((a, b) => {
+    if (a.sortAmount !== b.sortAmount) return a.sortAmount - b.sortAmount;
+    if (a.sortBettors !== b.sortBettors) return a.sortBettors - b.sortBettors;
     return a.idx - b.idx;
   });
-  
-  const winningNumber = candidates[0]?.num;
-  if (winningNumber === undefined) {
-    throw new Error('No valid numbers found');
-  }
+
+  let winningNumber = penalizedCandidates[0].num;
   
   const winningColor = NUMBER_TO_COLOR[winningNumber];
   const winningSide = NUMBER_TO_SIDE[winningNumber];
 
-  // Step 4: Calculate pools
-  let numberPoolTotal = 0, colorPoolTotal = 0, sidePoolTotal = 0;
-  for (let i = 0; i < 10; i++) {
-    if (i === winningNumber) numberPoolTotal = numberTotals[i].amount;
-  }
-  // Sum from tracked bets
+  // Step 4: Calculate pools (using winningNumber, which is valid)
+  let numberPoolTotal = numberTotals[winningNumber]?.amount || 0;
   colorPoolTotal = Object.values(colorBets).reduce((sum, bets) => sum + bets.reduce((s, b) => s + b.amount, 0), 0);
   sidePoolTotal = Object.values(sideBets).reduce((sum, bets) => sum + bets.reduce((s, b) => s + b.amount, 0), 0);
 
@@ -164,7 +177,7 @@ function determineRoundResult(bets) {
     };
   };
 
-  const numberWinners = Array.from(numberTotals[winningNumber].bettors || []);
+  const numberWinners = Array.from(numberTotals[winningNumber]?.bettors || []);
   const colorPool = processPool(colorPoolTotal, colorBets[winningColor] ? colorBets[winningColor].map(b => b.user) : []);
   const sidePool = processPool(sidePoolTotal, sideBets[winningSide] ? sideBets[winningSide].map(b => b.user) : []);
   const numberPool = processPool(numberPoolTotal, numberWinners);
@@ -212,63 +225,58 @@ function determineRoundResult(bets) {
   };
 }
 
-// ─── Test Cases (Run this file to test) ───────────────────────
+// ─── Test Cases (Updated for exclusions/no-repeat) ─────────────
 function runTests() {
-  console.log('🧪 Running Color Trading Test Cases...\n');
+  console.log('🧪 Color Trading Tests - No 0/5 + No Repeat...\n');
 
-  // Test 1: 0-amount number wins (high priority)
+  // Test 1: Exclude 0 even if least (picks 5? NO, picks next valid like 1)
   const test1Bets = [
-    { user: 'A', number: 2, color: 'Red', side: 'Small', totalAmount: 100 },
-    { user: 'B', number: 6, color: 'Red', side: 'Big', totalAmount: 100 },
-    { user: 'C', number: 7, color: 'Green', side: 'Big', totalAmount: 100 },
-    { user: 'D', number: 9, color: 'Green', side: 'Big', totalAmount: 100 },
-    { user: 'E', number: 2, color: 'Red', side: 'Small', totalAmount: 100 },
-    { user: 'F', number: null, color: 'Red', side: null, totalAmount: 100 },
-    { user: 'G', number: null, color: null, side: 'Big', totalAmount: 100 },
-    { user: 'H', number: 4, color: 'Red', side: 'Small', totalAmount: 100 },
-    { user: 'I', number: 8, color: 'Red', side: 'Big', totalAmount: 100 }
+    { user: 'A', number: 2, color: null, side: null, totalAmount: 100 }
   ];
-  console.log('Test 1: 0-amount winner (e.g. 0)');
-  console.log(JSON.stringify(determineRoundResult(test1Bets), null, 2));
+  console.log('Test 1: Only 2 bet - should pick 1,3,4,6,7,8,9 zero (not 0/5)');
+  console.log('Result:', JSON.stringify(determineRoundResult(test1Bets), null, 2));
   console.log('');
 
-  // Test 2: No 0-amount, least amount wins
-  const test2Bets = [
-    { user: 'X', number: 1, color: null, side: null, totalAmount: 50 }, // least
-    { user: 'Y', number: 2, color: null, side: null, totalAmount: 100 }
-  ];
-  console.log('Test 2: Least amount (1 wins)');
-  console.log(JSON.stringify(determineRoundResult(test2Bets), null, 2));
+  // Test 2: Least amount 1, prev=1 → pick next tie (e.g. other zeros)
+  console.log('Test 2: prevWinner=1, least=1 → avoid repeat (unique lowest)');
+  console.log('Result:', JSON.stringify(determineRoundResult(test1Bets, 1), null, 2));
   console.log('');
 
-  // Test 3: Single user full loss (0-amount wins)
-  const test3Bets = [
-    { user: 'Solo', number: 6, color: 'Red', side: 'Big', totalAmount: 100 }
+  // Test 3: prev=2 unique lowest (only bet on 7), should pick 1/3/4/6/etc NOT 2
+  console.log('Test 3: prev=2 unique lowest (bet only 7), → pick other zero');
+  console.log('Result:', JSON.stringify(determineRoundResult([{user:'Z', number:7, totalAmount:100}], 2), null, 2));
+  console.log('');
+
+  // Test 4: Tie 1&3 least, prev=1 → pick 3
+  const test4Bets = [
+    { user: 'X', number: 1, totalAmount: 50 },
+    { user: 'Y', number: 3, totalAmount: 50 },
+    { user: 'Z', number: 7, totalAmount: 100 }
   ];
-  console.log('Test 3: Single bet, 0-amount wins (platform max profit)');
-  console.log(JSON.stringify(determineRoundResult(test3Bets), null, 2));
+  console.log('Test 4: Tie 1&3 least, prev=1 → pick 3');
+  console.log('Result:', JSON.stringify(determineRoundResult(test4Bets, 1), null, 2));
 }
 
-// ─── Legacy (Deprecated for new pool logic) ───────────────────
+// ─── Legacy ───────────────────────────────────────────────────
 const GAME_MODES = {
   wingo: { id: 'wingo', duration: 30, bettingWindow: 25 },
   fastparity: { id: 'fastparity', duration: 10, bettingWindow: 7 }
 };
 
-// ─── Exports ────────────────────────────────────────────────────
+// Exports
 module.exports = {
   GAME_MODES,
   NUMBER_TO_COLOR,
   NUMBER_TO_SIDE,
-  determineRoundResult, // NEW PRIMARY (uses bets for deterministic result)
-  
-  // Legacy compatibility wrappers (for colorServer.js)
+  VALID_NUMBERS,
+  determineRoundResult,
   generateResult(serverSeed, roundId) {
-    // Deterministic hash → number 0-9 from seed (for compatibility)
-    const hash = crypto.createHash('sha256')
-      .update(serverSeed + roundId.toString())
-      .digest('hex');
-    const num = parseInt(hash.slice(0, 2), 16) % 10;
+    // Legacy: pick from valid only
+    const hash = crypto.createHash('sha256').update(serverSeed + roundId.toString()).digest('hex');
+    let num = parseInt(hash.slice(0, 2), 16) % 10;
+    if (!VALID_NUMBERS.includes(num)) {
+      num = VALID_NUMBERS[Math.floor(Math.random() * VALID_NUMBERS.length)];
+    }
     return {
       number: num,
       colors: [NUMBER_TO_COLOR[num]],
@@ -276,29 +284,20 @@ module.exports = {
       hash: hash.slice(0, 16)
     };
   },
-  
   resolveBet(bet, result) {
-    // Legacy single bet resolver (multiplied by 9.0x for color/number/size)
     const matchers = {
       number: bet.type === 'number' && parseInt(bet.value) === result.number,
       color: bet.type === 'color' && bet.value === result.colors[0],
       size: bet.type === 'size' && bet.value === result.size
     };
-    
     const won = matchers[bet.type];
     const multiplier = 9.0;
     const payout = won ? Math.round(bet.amount * multiplier * 100) / 100 : 0;
-    
-    return {
-      won,
-      payout,
-      profit: payout - bet.amount
-    };
+    return { won, payout, profit: payout - bet.amount };
   }
 };
 
-
-// ─── Run tests if direct ──────────────────────────────────────
 if (require.main === module) {
   runTests();
 }
+

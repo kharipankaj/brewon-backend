@@ -3,6 +3,7 @@ const User = require("../models/User");
 const { Bet: AviatorBet } = require("../models/Aviator-bet");
 const auth = require("../middleware/auth");
 
+
 const router = express.Router();
 
 
@@ -47,7 +48,7 @@ router.get("/mybets", auth, async (req, res) => {
             .limit(50)
             .lean();
 
-        console.log(`✅ mybets: Found ${bets.length} bets for ${userId.slice(-4)}`);
+console.log(`✅ mybets: Found ${bets.length} bets for ${userId.slice(-4)}`);
 
         return res.json({
             success: true,
@@ -62,6 +63,26 @@ router.get("/mybets", auth, async (req, res) => {
             message: "Failed to fetch bets"
         });
     }
+});
+
+/**
+ * 🎮 SIMULATE AVIATOR ROUND - Test engine (no auth for demo)
+ */
+router.post('/simulate', async (req, res) => {
+  try {
+    const { bets, round, numRounds } = req.body;
+    
+    if (numRounds) {
+      const sim = aviatorEngine.simulateRounds(bets || [], numRounds);
+      aviatorEngine.verifyPlatformSafety(sim.rounds);
+      return res.json({ success: true, simulation: sim });
+    }
+    
+    const result = aviatorEngine.processRound(bets || [], round || 1);
+    return res.json({ success: true, ...result });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: err.message });
+  }
 });
 
 module.exports = router;
