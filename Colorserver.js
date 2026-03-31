@@ -6,6 +6,7 @@
 const crypto = require("crypto");
 const jwt = require("jsonwebtoken");
 const { GAME_MODES, determineRoundResult, NUMBER_TO_COLOR, NUMBER_TO_SIDE } = require("./colorGameEngine");
+const { saveColorRevenue, updateRevenueSummary } = require('./utils/revenueTracker');
 
 // ─── In-memory state per game mode ───────────────────────────
 const gameState = {};
@@ -241,6 +242,26 @@ function startGameLoop(ns, mode, ColorBet, ColorRound, User) {
       bets: state.bets.map((b) => b._id),
       poolSummary: result.poolSummary
     });
+
+    // REVENUE TRACKING: Save after ColorRound
+    try {
+      const totalBetsAmount = state.bets.reduce((sum, b) => sum + b.amount, 0);
+      const revenueResult = {
+        winningNumber: result.winningNumber,
+        winningColor: result.winningColor,
+        winningSide: result.winningSide,
+        platformProfit: result.platformProfit,
+        poolSummary: result.poolSummary,
+        payouts: result.payouts,
+        bets: state.bets.map(b => ({ amount: b.amount })),
+        roundId: `COLOR-${new Date().toISOString().split('T')[0].replace(/-/g, '')}-${state.roundId.toString().slice(-4)}`
+      };
+      
+      await saveColorRevenue(revenueResult);
+      
+    } catch (revenueErr) {
+      console.error('Color revenue tracking failed:', revenueErr);
+    }
 
     // Update recent
     state.recentResults.unshift({

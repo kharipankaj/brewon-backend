@@ -1,4 +1,5 @@
 const { v4: uuidv4 } = require('uuid');
+const { saveAviatorRevenue, updateRevenueSummary } = require('./utils/revenueTracker');
 
 function generateCrashPoint() {
   const houseEdge = 0.04;
@@ -113,6 +114,45 @@ class GameEngine {
         { $set: { status: 'crashed', endTime: new Date() } }
       );
     } catch (e) { /* non-fatal */ }
+
+    // REVENUE TRACKING: Calculate + save after bets saved
+    try {
+      let totalBets = 0;
+      let totalPayout = 0;
+      const results = [];
+      
+      for (const [, bet] of this.activeBets.entries()) {
+        totalBets += bet.betAmount;
+        if (bet.cashedOutAt) {
+          totalPayout += parseFloat((bet.betAmount * bet.cashedOutAt).toFixed(2));
+        }
+        results.push({
+          user: bet.username,
+          invested: parseFloat(bet.betAmount.toFixed(2)),
+          cashoutAt: bet.cashedOutAt,
+          status: bet.cashedOutAt ? 'WIN' : 'LOSE',
+          payout: bet.cashedOutAt ? parseFloat((bet.betAmount * bet.cashedOutAt).toFixed(2)) : 0,
+          profit: bet.cashedOutAt ? parseFloat((bet.betAmount * (bet.cashedOutAt - 1)).toFixed(2)) : -bet.betAmount
+        });
+      }
+      
+      const profit = parseFloat((totalBets - totalPayout).toFixed(2));
+      const round_id = `AVIATOR-${new Date().toISOString().split('T')[0].replace(/-/g, '')}-${this.currentRound?.roundId?.slice(-4) || '000'}`;
+      
+      await saveAviatorRevenue({
+        totalBets,
+        totalPayout,
+        crashPoint: cp,
+        results,
+        roundId: round_id
+      });
+      
+      // Update summary
+      await updateRevenueSummary(profit, 'aviator');
+      
+    } catch (revenueErr) {
+      console.error('Revenue tracking failed:', revenueErr);
+    }
 
     this.io.emit('game:crash', {
       crashPoint: cp,

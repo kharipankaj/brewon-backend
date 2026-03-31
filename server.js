@@ -208,6 +208,8 @@ app.use('/login', require('./routes/login'));
 app.use('/aviator', require('./routes/aviator'));
 app.use('/logout', require('./routes/logout'));
 app.use("/color", require("./routes/colorTrading"));
+app.use('/revenue', require('./routes/revenue'));
+app.use('/wallet', require('./routes/wallet'));
 
 // ✅ 404
 app.use((req, res) => {

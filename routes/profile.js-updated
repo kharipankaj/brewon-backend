@@ -42,36 +42,6 @@ router.get("/", auth, async (req, res) => {
 });
 
 /**
- * 🎰 GET MY BETS - Last 50 bets for authenticated user
- */
-router.get("/mybets", auth, async (req, res) => {
-  try {
-    const { userId } = req.user;
-    console.log("🧾 mybets request for userId:", userId);
-
-    const bets = await AviatorBet.find({ playerId: userId })
-      .sort({ createdAt: -1 })
-      .limit(50)
-      .lean();
-
-    console.log(`✅ mybets: Found ${bets.length} bets for ${userId.slice(-4)}`);
-
-    return res.json({
-      success: true,
-      bets,
-      count: bets.length
-    });
-
-  } catch (err) {
-    console.error("❌ mybets error:", err);
-    return res.status(500).json({
-      success: false,
-      message: "Failed to fetch bets"
-    });
-  }
-});
-
-  /**
  * 💰 GET /profile/transactions - Wallet transaction history
  */
 router.get("/transactions", auth, async (req, res) => {
@@ -133,4 +103,3 @@ router.get("/mybets", auth, async (req, res) => {
 });
 
 module.exports = router;
-
