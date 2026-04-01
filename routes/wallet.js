@@ -1,54 +1,63 @@
 const express = require("express");
 const User = require("../models/User");
 const Transaction = require("../models/Transaction");
+const DepositRequest = require("../models/DepositRequest");
 const auth = require("../middleware/auth");
+const cloudinaryUpload = require("../middleware/cloudinaryUpload.js");
+
+const roundAmount = (amt) => Math.round(Number(amt));
 
 const router = express.Router();
 
 /**
  * 💰 POST /wallet/deposit - Simulate deposit
  */
-router.post("/deposit", auth, async (req, res) => {
+router.post("/deposit", auth, cloudinaryUpload("file"), async (req, res) => {
   try {
-    const { userId } = req.user;
-    const { amount, upiId, utrNo } = req.body;
-
-    if (!amount || amount < 100) {
-      return res.status(400).json({ success: false, message: "Minimum deposit ₹100" });
+    if (!req.uploadedData) {
+      return res.status(400).json({ success: false, message: "Screenshot upload failed. Please upload payment proof." });
     }
-    if (!upiId || !utrNo) {
-      return res.status(400).json({ success: false, message: "UPI ID and UTR number required" });
+    const { url } = req.uploadedData;
+
+    const amount = roundAmount(req.body.amount);
+    const utrNo = String(req.body.utrNo || req.body.utr || "").trim().toUpperCase();
+    const upiId = String(req.body.upiId || "").trim();
+    const screenshotUrl = url;
+
+    // Validation
+    if (!amount || amount < 50) {
+      return res.status(400).json({ success: false, error: "Minimum deposit ₹50" });
+    }
+    if (!utrNo) {
+      return res.status(400).json({ success: false, error: "UTR/Transaction ID required" });
+    }
+    if (!upiId) {
+      return res.status(400).json({ success: false, error: "UPI ID required" });
     }
 
-    // Create pending deposit request
-    const DepositRequest = require('../models/DepositRequest');
-    await DepositRequest.create({
-      userId,
+    // Check duplicate UTR per user
+    const existing = await DepositRequest.findOne({ utrNo, userId: req.user.id });
+    if (existing) {
+      return res.status(400).json({ success: false, error: "UTR already submitted" });
+    }
+
+    const request = await DepositRequest.create({
+      userId: req.user.id,
       amount,
       upiId,
       utrNo,
-      description: `UPI deposit request`
-    });
-
-    // Log pending transaction
-    const Transaction = require('../models/Transaction');
-    await Transaction.create({
-      userId,
-      type: "deposit",
-      amount,
+      screenshotUrl,
       status: "pending",
-      description: `Processing UPI deposit ₹${amount} | UPI: ${upiId} | UTR: ${utrNo}`
     });
 
-    res.json({
+    res.status(201).json({ 
       success: true,
-      message: "Deposit request submitted! It will be processed soon.",
-      transactionId: "dep-" + Date.now()
+      message: "Deposit request submitted successfully! Awaiting approval.",
+      requestId: request._id 
     });
-
-  } catch (err) {
-    console.error("Deposit error:", err);
-    res.status(500).json({ success: false, message: "Server error" });
+  } catch (error) {
+    console.error("Deposit error:", error);
+    res.status(500).json({ success: false, error: "Server error during deposit request" });
   }
 });
 

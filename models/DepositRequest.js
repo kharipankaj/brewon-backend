@@ -1,6 +1,5 @@
 const mongoose = require('mongoose');
 
-const mongoose = require('mongoose');
 
 const depositRequestSchema = new mongoose.Schema({
   userId: {
