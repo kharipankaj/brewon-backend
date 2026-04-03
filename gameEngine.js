@@ -1,5 +1,6 @@
 const { v4: uuidv4 } = require('uuid');
 const { saveAviatorRevenue, updateRevenueSummary } = require('./utils/revenueTracker');
+const { deductGameEntry, payoutGameWinner } = require('./services/gameWalletService');
 
 function generateCrashPoint() {
   const houseEdge = 0.04;
@@ -22,8 +23,9 @@ class GameEngine {
     this.startTime = null;
     this.tickInterval = null;
     this.crashPoint = null;
-    this.activeBets = new Map(); // socketId -> betObj
+    this.activeBets = new Map();
     this.recentCrashes = [];
+    this.nextRoundId = null;
 
     this.WAITING_DURATION = 7000;
     this.TICK_RATE = 100;
@@ -39,6 +41,7 @@ class GameEngine {
     this.activeBets.clear();
     this.currentRound = null;
     this.crashPoint = null;
+    this.nextRoundId = uuidv4();
 
     this.io.emit('game:waiting', { countdownSeconds: this.WAITING_DURATION / 1000 });
     setTimeout(() => this.startRound(), this.WAITING_DURATION);
@@ -46,7 +49,7 @@ class GameEngine {
 
   async startRound() {
     this.crashPoint = generateCrashPoint();
-    const roundId = uuidv4();
+    const roundId = this.nextRoundId || uuidv4();
     this.startTime = Date.now();
     this.state = 'flying';
 
@@ -61,6 +64,8 @@ class GameEngine {
     } catch (err) {
       this.currentRound = { roundId, crashPoint: this.crashPoint };
     }
+
+    this.nextRoundId = null;
 
     this.io.emit('game:start', { roundId, startTime: this.startTime });
     this.tickInterval = setInterval(() => this.tick(), this.TICK_RATE);
@@ -86,14 +91,13 @@ class GameEngine {
     this.recentCrashes.unshift(cp);
     if (this.recentCrashes.length > 12) this.recentCrashes.pop();
 
-    // ✅ Save ALL bets to AviatorBet model (wins + losses)
     for (const [, bet] of this.activeBets.entries()) {
       try {
         const multiplier = bet.cashedOutAt || null;
-        const profit = multiplier 
+        const profit = multiplier
           ? Math.floor((bet.betAmount * multiplier - bet.betAmount) * 100) / 100
           : -bet.betAmount;
-          
+
         await this.Bet.create({
           playerId: bet.playerId,
           username: bet.username,
@@ -113,14 +117,15 @@ class GameEngine {
         { roundId: this.currentRound?.roundId },
         { $set: { status: 'crashed', endTime: new Date() } }
       );
-    } catch (e) { /* non-fatal */ }
+    } catch (e) {
+      // non-fatal
+    }
 
-    // REVENUE TRACKING: Calculate + save after bets saved
     try {
       let totalBets = 0;
       let totalPayout = 0;
       const results = [];
-      
+
       for (const [, bet] of this.activeBets.entries()) {
         totalBets += bet.betAmount;
         if (bet.cashedOutAt) {
@@ -132,24 +137,24 @@ class GameEngine {
           cashoutAt: bet.cashedOutAt,
           status: bet.cashedOutAt ? 'WIN' : 'LOSE',
           payout: bet.cashedOutAt ? parseFloat((bet.betAmount * bet.cashedOutAt).toFixed(2)) : 0,
-          profit: bet.cashedOutAt ? parseFloat((bet.betAmount * (bet.cashedOutAt - 1)).toFixed(2)) : -bet.betAmount
+          profit: bet.cashedOutAt
+            ? parseFloat((bet.betAmount * (bet.cashedOutAt - 1)).toFixed(2))
+            : -bet.betAmount,
         });
       }
-      
+
       const profit = parseFloat((totalBets - totalPayout).toFixed(2));
       const round_id = `AVIATOR-${new Date().toISOString().split('T')[0].replace(/-/g, '')}-${this.currentRound?.roundId?.slice(-4) || '000'}`;
-      
+
       await saveAviatorRevenue({
         totalBets,
         totalPayout,
         crashPoint: cp,
         results,
-        roundId: round_id
+        roundId: round_id,
       });
-      
-      // Update summary
+
       await updateRevenueSummary(profit, 'aviator');
-      
     } catch (revenueErr) {
       console.error('Revenue tracking failed:', revenueErr);
     }
@@ -168,7 +173,6 @@ class GameEngine {
       return { success: false, message: 'Betting is closed. Wait for next round.' };
     }
 
-    // Single instance: rely on this.activeBets Map only
     if (this.activeBets.has(socket.id)) {
       return { success: false, message: 'You already placed a bet this round.' };
     }
@@ -177,42 +181,36 @@ class GameEngine {
     }
 
     try {
-      // ── Try walletBalance first (your User model), fallback to balance ──────
-      let player = await this.Player.findOneAndUpdate(
-        { _id: playerId, walletBalance: { $gte: betAmount } },
-        { $inc: { walletBalance: -betAmount } },
-        { new: true }
-      );
-
-      // Fallback: some schemas use 'balance'
-      if (!player) {
-        player = await this.Player.findOneAndUpdate(
-          { _id: playerId, balance: { $gte: betAmount } },
-          { $inc: { balance: -betAmount } },
-          { new: true }
-        );
-      }
-
-      if (!player) {
-        return { success: false, message: 'Insufficient balance.' };
-      }
+      const walletResult = await deductGameEntry({
+        userId: playerId,
+        amount: betAmount,
+        gameKey: 'aviator',
+        matchId: this.currentRound?.roundId || this.nextRoundId || 'upcoming',
+      });
 
       this.activeBets.set(socket.id, {
         playerId,
         username,
         betAmount,
         cashedOut: false,
-        autoCashout: autoCashout || null, // store for server-side auto cashout
+        autoCashout: autoCashout || null,
       });
 
-      // Broadcast to all clients so LiveBets updates
       this.io.emit('bet:placed', { username, betAmount });
 
-      // Return the correct balance field
-      const newBalance = player.walletBalance ?? player.balance ?? 0;
-      return { success: true, balance: newBalance };
-
+      return {
+        success: true,
+        balance: walletResult.wallet.totalBalance,
+        wallet: {
+          depositBalance: walletResult.wallet.depositBalance,
+          winningBalance: walletResult.wallet.winningBalance,
+          bonusBalance: walletResult.wallet.bonusBalance,
+        },
+      };
     } catch (err) {
+      if (err.message === 'INSUFFICIENT_BALANCE') {
+        return { success: false, message: 'Insufficient balance.' };
+      }
       return { success: false, message: 'Server error placing bet.' };
     }
   }
@@ -231,27 +229,19 @@ class GameEngine {
     }
 
     const multiplier = this.currentMultiplier;
-    const winAmount  = Math.floor(bet.betAmount * multiplier * 100) / 100;
-    const profit     = Math.floor((winAmount - bet.betAmount) * 100) / 100;
+    const winAmount = Math.floor(bet.betAmount * multiplier * 100) / 100;
+    const profit = Math.floor((winAmount - bet.betAmount) * 100) / 100;
 
-    bet.cashedOut   = true;
+    bet.cashedOut = true;
     bet.cashedOutAt = multiplier;
 
     try {
-      // ── Try walletBalance first, fallback to balance ─────────────────────
-      let player = await this.Player.findByIdAndUpdate(
-        playerId,
-        { $inc: { walletBalance: winAmount } },
-        { new: true }
-      );
-
-      if (player?.walletBalance === undefined) {
-        player = await this.Player.findByIdAndUpdate(
-          playerId,
-          { $inc: { balance: winAmount } },
-          { new: true }
-        );
-      }
+      const walletResult = await payoutGameWinner({
+        userId: playerId,
+        amount: winAmount,
+        gameKey: 'aviator',
+        matchId: this.currentRound?.roundId || 'unknown',
+      });
 
       await this.Bet.create({
         playerId,
@@ -269,22 +259,26 @@ class GameEngine {
         profit,
       });
 
-      const newBalance = player?.walletBalance ?? player?.balance ?? 0;
-      return { success: true, multiplier, winAmount, profit, balance: newBalance };
-
+      return {
+        success: true,
+        multiplier,
+        winAmount,
+        profit,
+        balance: walletResult.wallet.totalBalance,
+        wallet: {
+          depositBalance: walletResult.wallet.depositBalance,
+          winningBalance: walletResult.wallet.winningBalance,
+          bonusBalance: walletResult.wallet.bonusBalance,
+        },
+      };
     } catch (err) {
       return { success: false, message: 'Server error on cashout.' };
     }
   }
 
-  // ── Server-side auto cashout check (called on every tick) ─────────────────
   checkAutoCashouts() {
     for (const [socketId, bet] of this.activeBets.entries()) {
-      if (
-        !bet.cashedOut &&
-        bet.autoCashout &&
-        this.currentMultiplier >= bet.autoCashout
-      ) {
+      if (!bet.cashedOut && bet.autoCashout && this.currentMultiplier >= bet.autoCashout) {
         const fakeSocket = { id: socketId };
         this.cashOut(fakeSocket, { playerId: bet.playerId });
       }

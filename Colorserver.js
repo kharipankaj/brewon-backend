@@ -10,6 +10,14 @@ const { saveColorRevenue, updateRevenueSummary } = require('./utils/revenueTrack
 
 // ─── In-memory state per game mode ───────────────────────────
 const gameState = {};
+const MODE_SUFFIX = {
+  wingo: 1,
+  fastparity: 2,
+};
+
+function getUniqueRoundId(modeId) {
+  return Date.now() * 10 + (MODE_SUFFIX[modeId] || 0);
+}
 
 function createRoundState(mode) {
   return {
@@ -147,7 +155,7 @@ function startGameLoop(ns, mode, ColorBet, ColorRound, User) {
   async function runRound() {
     const state = gameState[mode.id];
 
-    state.roundId = Date.now();
+    state.roundId = getUniqueRoundId(mode.id);
     state.serverSeed = crypto.randomBytes(32).toString("hex");
     state.bets = [];
     state.result = null;
@@ -170,7 +178,7 @@ function startGameLoop(ns, mode, ColorBet, ColorRound, User) {
 
     // NEW: Pass previousWinner from recentResults
     const previousWinner = state.recentResults[0]?.number ?? null;
-    console.log(`[Round ${state.roundId}] previousWinner: ${previousWinner}, bets: ${state.bets.length}`);
+    console.log(`[Round ${mode.id}:${state.roundId}] previousWinner: ${previousWinner}, bets: ${state.bets.length}`);
 
     const result = determineRoundResult(state.bets.map(b => ({
       user: b.userId,

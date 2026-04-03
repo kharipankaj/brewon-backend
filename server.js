@@ -8,6 +8,8 @@ const http = require('http');
 const { Server } = require('socket.io');
 const mongoose = require('mongoose');
 const jwt = require('jsonwebtoken');
+const { setAdminNamespace } = require('./services/adminSocketService');
+const { getDashboardStats } = require('./services/adminAnalyticsService');
 
 const { initColorTrading } = require("./colorServer");
 
@@ -101,9 +103,10 @@ function startGame() {
 // ✅ SOCKET AUTH MIDDLEWARE - ENHANCED DEBUG LOGGING
 io.use((socket, next) => {
   console.log('🔌 Socket connect attempt:', socket.id?.slice(0, 8));
+  let token;
 
   try {
-    let token = socket.handshake.auth?.token;
+    token = socket.handshake.auth?.token;
     console.log('🔌 Token source:', token ? 'auth.token' : 'checking cookies');
 
     if (!token && socket.handshake.headers['cookie']) {
@@ -196,11 +199,65 @@ io.on('connection', (socket) => {
   socket.on('disconnect', () => { });
 });
 
+const adminIo = io.of('/admin');
+setAdminNamespace(adminIo);
+
+adminIo.use((socket, next) => {
+  try {
+    let token = socket.handshake.auth?.token;
+
+    if (!token && socket.handshake.headers?.cookie) {
+      const cookies = socket.handshake.headers.cookie.split(';');
+      const match = cookies.find((entry) => entry.trim().startsWith('accessToken='));
+      if (match) {
+        token = decodeURIComponent(match.split('=')[1]);
+      }
+    }
+
+    if (!token) {
+      return next(new Error('No token provided'));
+    }
+
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    const role = decoded.role || 'user';
+
+    if (!['super_admin', 'admin', 'staff', 'moderator'].includes(role)) {
+      return next(new Error('Admin access required'));
+    }
+
+    socket.user = {
+      userId: decoded.userId || decoded.id,
+      username: decoded.username,
+      role,
+    };
+
+    return next();
+  } catch (error) {
+    return next(new Error(`Authentication failed: ${error.message}`));
+  }
+});
+
+adminIo.on('connection', (socket) => {
+  console.log(`[ADMIN] Admin connected: ${socket.user.username}`);
+
+  getDashboardStats()
+    .then((stats) => {
+      socket.emit('updateStats', stats);
+    })
+    .catch(() => {});
+  
+  socket.on('disconnect', () => {
+    console.log(`[ADMIN] Admin disconnected: ${socket.user.username}`);
+  });
+});
+
+
 // ✅ ROUTES
 app.get('/', (req, res) => {
   res.json({ message: 'Server running 🚀' });
 });
 
+app.use('/api/admin', require('./routes/admin'));
 app.use('/refresh', require('./routes/refresh'));
 app.use('/signup', require('./routes/signup'));
 app.use('/profile', require('./routes/profile'));
@@ -210,6 +267,8 @@ app.use('/logout', require('./routes/logout'));
 app.use("/color", require("./routes/colorTrading"));
 app.use('/revenue', require('./routes/revenue'));
 app.use('/wallet', require('./routes/wallet'));
+app.use('/games', require('./routes/games'));
+
 
 // ✅ 404
 app.use((req, res) => {

@@ -78,32 +78,59 @@ async function saveColorRevenue({
   
   const totalPlayers = bets.length;
 
-  const docData = {
-    game_type: 'color_trading',
-    round_id: roundId || generateRoundId('COLOR'),
-    total_bets: totalBets,
-    total_payout: totalPayout,
-    platform_profit: profit,
-    platform_percent: percent,
-    game_details: {
-      winningNumber,
-      winningColor,
-      winningSide,
-      totalPlayers,
-      numberPoolProfit: poolSummary?.numberPool?.platformCut || 0,
-      colorPoolProfit: poolSummary?.colorPool?.platformCut || 0,
-      sidePoolProfit: poolSummary?.sidePool?.platformCut || 0
-    },
-    date: new Date()
-  };
+  let finalRoundId = roundId || generateRoundId('COLOR');
 
-  const revenue = new PlatformRevenue(docData);
-  await revenue.save();
+  // Upsert instead of insert if duplicate
+  const existing = await PlatformRevenue.findOne({ round_id: finalRoundId });
+  if (existing) {
+    console.log(`⚠️ Duplicate round_id ${finalRoundId}, upserting...`);
+    await PlatformRevenue.findOneAndUpdate(
+      { round_id: finalRoundId },
+      {
+        total_bets: totalBets,
+        total_payout: totalPayout,
+        platform_profit: profit,
+        platform_percent: percent,
+        game_details: {
+          winningNumber,
+          winningColor,
+          winningSide,
+          totalPlayers,
+          numberPoolProfit: poolSummary?.numberPool?.platformCut || 0,
+          colorPoolProfit: poolSummary?.colorPool?.platformCut || 0,
+          sidePoolProfit: poolSummary?.sidePool?.platformCut || 0
+        },
+        date: new Date()
+      },
+      { upsert: true }
+    );
+  } else {
+    const docData = {
+      game_type: 'color_trading',
+      round_id: finalRoundId,
+      total_bets: totalBets,
+      total_payout: totalPayout,
+      platform_profit: profit,
+      platform_percent: percent,
+      game_details: {
+        winningNumber,
+        winningColor,
+        winningSide,
+        totalPlayers,
+        numberPoolProfit: poolSummary?.numberPool?.platformCut || 0,
+        colorPoolProfit: poolSummary?.colorPool?.platformCut || 0,
+        sidePoolProfit: poolSummary?.sidePool?.platformCut || 0
+      },
+      date: new Date()
+    };
+    const revenue = new PlatformRevenue(docData);
+    await revenue.save();
+  }
   
   await updateRevenueSummary(profit, 'color_trading');
   
-  console.log(`🎨 COLOR Revenue saved: ${docData.round_id} | ₹${profit} (${percent}%)`);
-  return revenue;
+  console.log(`🎨 COLOR Revenue saved/upsert: ${finalRoundId} | ₹${profit} (${percent}%)`);
+  return { round_id: finalRoundId };
 }
 
 async function updateRevenueSummary(profit, gameType) {

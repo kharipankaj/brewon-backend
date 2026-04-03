@@ -30,7 +30,6 @@ const roundSchema = new mongoose.Schema({
   createdAt: { type: Date, default: Date.now },
 });
 
-roundSchema.index({ roundId: 1 });
 roundSchema.index({ status: 1, createdAt: -1 });
 const AviatorRound = mongoose.model('Aviator-round', roundSchema);
 module.exports = { AviatorRound };

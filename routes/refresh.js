@@ -55,20 +55,29 @@ router.post('/', async (req, res) => {
       return res.status(401).json({ message: 'Invalid device or token' });
     }
 
-    // Rotate tokens
     const newAccessToken = generateAccessToken(user);
     const newRefreshToken = generateRefreshToken(user._id);
+    const newTokenHash = hashToken(newRefreshToken);
+    const refreshedAt = new Date();
 
-    // Remove old token
-    user.refreshTokens.splice(tokenIndex, 1);
-    // Add new
-    user.refreshTokens.push({
-      tokenHash: hashToken(newRefreshToken),
-      device: deviceId,
-      createdAt: new Date()
-    });
-    user.tokenLastRefreshedAt = new Date();
-    await user.save();
+    const updateResult = await User.updateOne(
+      {
+        _id: user._id,
+        'refreshTokens.tokenHash': tokenHash,
+        'refreshTokens.device': deviceId
+      },
+      {
+        $set: {
+          'refreshTokens.$.tokenHash': newTokenHash,
+          'refreshTokens.$.createdAt': refreshedAt,
+          tokenLastRefreshedAt: refreshedAt
+        }
+      }
+    );
+
+    if (updateResult.modifiedCount === 0) {
+      return res.status(401).json({ message: 'Refresh token already rotated' });
+    }
 
     // Set new cookie
     res.cookie('refreshToken', newRefreshToken, {
@@ -90,4 +99,3 @@ router.post('/', async (req, res) => {
 });
 
 module.exports = router;
-

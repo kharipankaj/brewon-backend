@@ -45,13 +45,19 @@ const userSchema = new mongoose.Schema({
   },
   role: {
     type: String,
-    enum: ['user', 'moderator', 'admin'],
+    enum: ['user', 'staff', 'admin', 'super_admin', 'moderator'],
     default: 'user'
+  },
+  status: {
+    type: String,
+    enum: ['active', 'banned'],
+    default: 'active'
   },
   isVerified: {
     type: Boolean,
     default: false
   },
+
   balance: {
     type: Number,
     default: 0,
@@ -103,4 +109,3 @@ userSchema.methods.comparePassword = async function (candidatePassword) {
 userSchema.index({ balance: 1 });
 userSchema.index({ 'refreshTokens.tokenHash': 1 }, { sparse: true });
 module.exports = mongoose.model('User', userSchema);
-

@@ -2,11 +2,15 @@ const jwt = require("jsonwebtoken");
 
 module.exports = function (req, res, next) {
   try {
-    const token = req.cookies?.accessToken;
+    const authHeader = req.headers.authorization || req.headers.Authorization;
+    const bearerToken = typeof authHeader === "string" && authHeader.startsWith("Bearer ")
+      ? authHeader.slice(7).trim()
+      : null;
+    const token = req.cookies?.accessToken || bearerToken;
 
     if (!token) {
       return res.status(401).json({
-        message: "No access token cookie",
+        message: "No access token provided",
         code: "NO_TOKEN"
       });
     }

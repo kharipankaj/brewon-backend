@@ -185,7 +185,15 @@ maxAge: 7 * 24 * 60 * 60 * 1000
       success: true,
       message: 'Login successful',
       accessToken,  // Frontend sessionStorage
-      sessionToken: accessToken
+      sessionToken: accessToken,
+      user: {
+        _id: user._id,
+        username: user.username,
+        role: user.role,
+        email: user.email || '',
+        firstName: user.firstName || '',
+        lastName: user.lastName || ''
+      }
     });
 
   } catch (err) {

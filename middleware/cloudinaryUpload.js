@@ -8,11 +8,18 @@ const upload = multer({ storage });
 const cloudinaryUpload = (fieldName) => {
   return [
     upload.single(fieldName),
-    async (req, res, next) => {
+    (req, res, next) => {
       try {
         if (!req.file) {
           req.uploadedData = null;
           return next();
+        }
+
+        if (!cloudinary) {
+          console.error("Cloudinary not configured");
+          return res
+            .status(500)
+            .json({ success: false, message: "Upload service not configured" });
         }
 
         const isImage = req.file.mimetype.startsWith("image");
@@ -37,7 +44,7 @@ const cloudinaryUpload = (fieldName) => {
               console.error("Cloudinary upload error:", error);
               return res
                 .status(500)
-                .json({ success: false, message: "Cloudinary upload failed" });
+                .json({ success: false, message: "Cloudinary upload failed: " + (error.message || error) });
             }
 
             req.uploadedData = {
@@ -51,12 +58,21 @@ const cloudinaryUpload = (fieldName) => {
           }
         );
 
+        stream.on("error", (error) => {
+          console.error("Stream error:", error);
+          if (!res.headersSent) {
+            res
+              .status(500)
+              .json({ success: false, message: "Upload stream failed: " + (error.message || error) });
+          }
+        });
+
         Readable.from(req.file.buffer).pipe(stream);
       } catch (err) {
         console.error("Upload middleware error:", err);
         res
           .status(500)
-          .json({ success: false, message: "Upload middleware failed" });
+          .json({ success: false, message: "Upload middleware failed: " + (err.message || err) });
       }
     },
   ];
