@@ -180,39 +180,52 @@ function startGameLoop(ns, mode, ColorBet, ColorRound, User) {
     const previousWinner = state.recentResults[0]?.number ?? null;
     console.log(`[Round ${mode.id}:${state.roundId}] previousWinner: ${previousWinner}, bets: ${state.bets.length}`);
 
-    const result = determineRoundResult(state.bets.map(b => ({
+    const result = determineRoundResult(state.bets.map((b) => ({
+      betId: String(b._id),
       user: b.userId,
       username: b.username,
       type: b.type,
       value: b.value,
       amount: b.amount,
-      number: b.type === 'number' ? parseInt(b.value) : null,
-      color: b.type === 'color' ? b.value : null,
-      side: b.type === 'size' ? b.value : null,
-      totalAmount: b.amount
-    }), previousWinner));
+    })), previousWinner);
     
     state.result = result;
     state.status = "result";
 
-    // Process payouts
     const resolvedBets = [];
     let totalPayout = 0;
 
-    for (const payout of result.payouts) {
-      const matchingBet = state.bets.find(b => b.userId === payout.user);
+    for (const betResult of result.betResults) {
+      const matchingBet = state.bets.find((b) => String(b._id) === String(betResult.betId));
       if (!matchingBet) continue;
 
       const resolution = {
         ...matchingBet,
-        won: payout.totalPayout > 0,
-        payout: payout.totalPayout,
-        profit: payout.profitLoss
+        userId: betResult.user,
+        won: betResult.won,
+        payout: betResult.payout,
+        profit: betResult.profitLoss,
       };
       resolvedBets.push(resolution);
 
+      if (betResult.payout > 0) {
+        totalPayout += betResult.payout;
+      }
+
+      await ColorBet.findByIdAndUpdate(matchingBet._id, {
+        status: betResult.won ? "won" : "lost",
+        payout: betResult.payout,
+        profit: betResult.profitLoss,
+        result: {
+          number: result.winningNumber,
+          colors: [result.winningColor],
+          size: result.winningSide,
+        },
+      });
+    }
+
+    for (const payout of result.payouts) {
       if (payout.totalPayout > 0) {
-        totalPayout += payout.totalPayout;
         try {
           await User.findByIdAndUpdate(payout.user, {
             $inc: { balance: payout.totalPayout, totalWins: 1 },
@@ -221,17 +234,6 @@ function startGameLoop(ns, mode, ColorBet, ColorRound, User) {
           console.error("[ColorTrading] payout error:", e);
         }
       }
-
-      await ColorBet.findByIdAndUpdate(matchingBet._id, {
-        status: payout.totalPayout > 0 ? "won" : "lost",
-        payout: payout.totalPayout,
-        profit: payout.profitLoss,
-        result: {
-          number: result.winningNumber,
-          colors: [result.winningColor],
-          size: result.winningSide,
-        },
-      });
     }
 
     // Save round
@@ -292,6 +294,7 @@ function startGameLoop(ns, mode, ColorBet, ColorRound, User) {
         platformProfit: result.platformProfit
       },
       resolvedBets: resolvedBets.map((b) => ({
+        userId: b.userId,
         username: b.username,
         type: b.type,
         value: b.value,

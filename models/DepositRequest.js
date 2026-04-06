@@ -15,11 +15,14 @@ const depositRequestSchema = new mongoose.Schema({
   },
   upiId: {
     type: String,
-    required: true
+    default: null,
+    trim: true
   },
   utrNo: {
     type: String,
-    required: true
+    required: true,
+    trim: true,
+    uppercase: true
   },
   screenshotUrl: {
     type: String,
@@ -52,5 +55,6 @@ const depositRequestSchema = new mongoose.Schema({
 
 depositRequestSchema.index({ userId: 1, createdAt: -1 });
 depositRequestSchema.index({ status: 1, createdAt: -1 });
+depositRequestSchema.index({ utrNo: 1 }, { unique: true });
 
 module.exports = mongoose.model('DepositRequest', depositRequestSchema);

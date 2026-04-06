@@ -4,6 +4,7 @@ const mongoose = require('mongoose');
 const User = require('../models/User');
 const Transaction = require('../models/Transaction');
 const DepositRequest = require('../models/DepositRequest');
+const WithdrawRequest = require('../models/WithdrawRequest');
 const WalletTransaction = require('../models/WalletTransaction');
 const { logAdminActivity } = require('../services/adminActivityService');
 const { emitAdminEvent } = require('../services/adminSocketService');
@@ -725,7 +726,7 @@ const adminController = {
 
   async getDepositRequests(req, res) {
     try {
-      const requests = await DepositRequest.find()
+      const requests = await DepositRequest.find({ status: 'pending' })
         .populate('userId', 'username firstName lastName email mobile balance')
         .populate('reviewedBy', 'username')
         .sort({ createdAt: -1 })
@@ -742,8 +743,6 @@ const adminController = {
   },
 
   async approveDepositRequest(req, res) {
-    const session = await mongoose.startSession();
-
     try {
       const rawAmount = Number(req.body.amount);
       const approvedAmount = Math.round(rawAmount);
@@ -752,99 +751,121 @@ const adminController = {
         return res.status(400).json({ success: false, message: 'Valid approval amount is required' });
       }
 
-      let approvedRequest = null;
+      // Find the deposit request
+      const depositRequest = await DepositRequest.findById(req.params.id);
 
-      await session.withTransaction(async () => {
-        const depositRequest = await DepositRequest.findById(req.params.id).session(session);
+      if (!depositRequest) {
+        return res.status(404).json({ success: false, message: 'Deposit request not found' });
+      }
 
-        if (!depositRequest) {
-          throw new Error('DEPOSIT_REQUEST_NOT_FOUND');
+      if (depositRequest.status !== 'pending') {
+        return res.status(400).json({ success: false, message: 'Deposit request is already reviewed' });
+      }
+
+      // Find the user
+      const user = await User.findById(depositRequest.userId);
+
+      if (!user) {
+        return res.status(404).json({ success: false, message: 'User not found' });
+      }
+
+      // Update user balance
+      user.balance = Number(user.balance || 0) + approvedAmount;
+      await user.save();
+
+      // Update the deposit request status to approved
+      depositRequest.status = 'approved';
+      depositRequest.approvedAmount = approvedAmount;
+      depositRequest.reviewedBy = req.user.userId;
+      depositRequest.reviewedAt = new Date();
+      await depositRequest.save();
+
+      // Store request info for logging
+      const requestInfo = {
+        _id: depositRequest._id,
+        amount: depositRequest.amount,
+        approvedAmount: approvedAmount,
+        utrNo: depositRequest.utrNo,
+        userId: depositRequest.userId,
+      };
+
+      // Update the pending transaction to approved
+      await Transaction.findOneAndUpdate(
+        {
+          userId: user._id,
+          type: 'deposit',
+          status: 'pending',
+          description: { $regex: `UTR: ${depositRequest.utrNo}`, $options: 'i' }
+        },
+        {
+          status: 'approved',
+          amount: approvedAmount,
+          approvedAmount: approvedAmount,
+          reviewedBy: req.user.userId,
+          reviewedAt: new Date(),
+          description: `Deposit approved | UTR: ${depositRequest.utrNo} | Requested: ${depositRequest.amount}`
         }
+      );
 
-        if (depositRequest.status !== 'pending') {
-          throw new Error('DEPOSIT_REQUEST_ALREADY_REVIEWED');
-        }
-
-        const user = await User.findById(depositRequest.userId).session(session);
-
-        if (!user) {
-          throw new Error('USER_NOT_FOUND');
-        }
-
-        user.balance = Number(user.balance || 0) + approvedAmount;
-        await user.save({ session });
-
-        depositRequest.status = 'approved';
-        depositRequest.approvedAmount = approvedAmount;
-        depositRequest.reviewedBy = req.user.userId;
-        depositRequest.reviewedAt = new Date();
-        depositRequest.description = depositRequest.description
-          ? `${depositRequest.description} | Approved by admin`
-          : 'Approved by admin';
-        await depositRequest.save({ session });
-
-        // Update the pending transaction to completed
-        await Transaction.findOneAndUpdate(
-          {
-            userId: user._id,
-            type: 'deposit',
-            status: 'pending',
-            description: { $regex: `UTR: ${depositRequest.utrNo}` }
-          },
-          {
-            status: 'completed',
-            reviewedBy: req.user.userId,
-            reviewedAt: new Date(),
-            description: `Deposit approved | UTR: ${depositRequest.utrNo} | Requested: ${depositRequest.amount}`
-          },
-          { session }
-        );
-
-        // If no pending transaction found (edge case), create a new one
-        const existingTxn = await Transaction.findOne(
-          {
-            userId: user._id,
-            type: 'deposit',
-            createdAt: { $gte: new Date(depositRequest.createdAt - 60000) } // within 1 minute
-          }
-        ).session(session);
-
-        if (!existingTxn) {
-          await Transaction.create(
-            [
-              {
-                userId: user._id,
-                type: 'deposit',
-                amount: approvedAmount,
-                status: 'completed',
-                reviewedBy: req.user.userId,
-                reviewedAt: new Date(),
-                description: `Deposit approved | UTR: ${depositRequest.utrNo} | Requested: ${depositRequest.amount}`,
-              },
-            ],
-            { session }
-          );
-        }
-
-        approvedRequest = await DepositRequest.findById(depositRequest._id)
-          .populate('userId', 'username firstName lastName email mobile balance')
-          .populate('reviewedBy', 'username')
-          .session(session);
-
-        await logAdminActivity({
-          adminId: req.user.userId,
-          targetUserId: user._id,
-          action: 'APPROVE_DEPOSIT',
-          module: 'transactions',
-          description: `Approved deposit request ${depositRequest._id}`,
-          metadata: {
-            requestedAmount: depositRequest.amount,
-            approvedAmount,
-            utrNo: depositRequest.utrNo,
-          },
-        });
+      // If no pending transaction found (edge case), create a new one
+      const existingTxn = await Transaction.findOne({
+        userId: user._id,
+        type: 'deposit',
+        amount: approvedAmount,
+        createdAt: { $gte: new Date(new Date().getTime() - 600000) } // within 10 minutes
       });
 
+      if (!existingTxn) {
+        await Transaction.create({
+          userId: user._id,
+          type: 'deposit',
+          amount: approvedAmount,
+          status: 'approved',
+          upiId: depositRequest.upiId || 'N/A',
+          utrNo: depositRequest.utrNo,
+          screenshotUrl: depositRequest.screenshotUrl,
+          approvedAmount: approvedAmount,
+          reviewedBy: req.user.userId,
+          reviewedAt: new Date(),
+          description: `Deposit approved | UTR: ${depositRequest.utrNo} | Requested: ${depositRequest.amount}`,
+        });
+      }
+
+      // Prepare response data
+      const approvedRequest = {
+        _id: requestInfo._id,
+        amount: requestInfo.amount,
+        approvedAmount: requestInfo.approvedAmount,
+        utrNo: requestInfo.utrNo,
+        status: 'approved',
+        userId: {
+          _id: user._id,
+          username: user.username,
+          firstName: user.firstName,
+          lastName: user.lastName,
+          email: user.email,
+          mobile: user.mobile,
+          balance: user.balance,
+        },
+        reviewedBy: req.user.userId,
+        reviewedAt: new Date(),
+      };
+
+      // Log admin activity
+      await logAdminActivity({
+        adminId: req.user.userId,
+        targetUserId: user._id,
+        action: 'APPROVE_DEPOSIT',
+        module: 'transactions',
+        description: `Approved deposit request ${depositRequest._id}`,
+        metadata: {
+          requestedAmount: depositRequest.amount,
+          approvedAmount,
+          utrNo: depositRequest.utrNo,
+        },
+      });
+
+      // Emit socket events
       emitAdminEvent('depositRequestUpdate', {
         action: 'approved',
         requestId: req.params.id,
@@ -855,7 +876,7 @@ const adminController = {
       });
       emitAdminEvent('userUpdate', {
         action: 'balance-updated',
-        userId: approvedRequest?.userId?._id,
+        userId: user._id,
       });
       await emitAdminRefreshPayload();
 
@@ -865,21 +886,7 @@ const adminController = {
         request: approvedRequest,
       });
     } catch (error) {
-      if (error.message === 'DEPOSIT_REQUEST_NOT_FOUND') {
-        return res.status(404).json({ success: false, message: 'Deposit request not found' });
-      }
-
-      if (error.message === 'DEPOSIT_REQUEST_ALREADY_REVIEWED') {
-        return res.status(400).json({ success: false, message: 'Deposit request is already reviewed' });
-      }
-
-      if (error.message === 'USER_NOT_FOUND') {
-        return res.status(404).json({ success: false, message: 'User not found' });
-      }
-
       return res.status(500).json({ success: false, message: error.message });
-    } finally {
-      await session.endSession();
     }
   },
 
@@ -902,7 +909,7 @@ const adminController = {
 
       await depositRequest.save();
 
-      // Update the associated pending transaction to failed
+      // Update the associated pending transaction to rejected
       await Transaction.findOneAndUpdate(
         {
           userId: depositRequest.userId._id,
@@ -911,7 +918,7 @@ const adminController = {
           description: { $regex: `UTR: ${depositRequest.utrNo}` }
         },
         {
-          status: 'failed',
+          status: 'rejected',
           reviewedBy: req.user.userId,
           reviewedAt: new Date(),
           description: `Deposit rejected | UTR: ${depositRequest.utrNo}`
@@ -961,7 +968,7 @@ const adminController = {
         });
       }
 
-      transaction.status = 'completed';
+      transaction.status = 'approved';
       transaction.reviewedBy = req.user.userId;
       transaction.reviewedAt = new Date();
 
@@ -1013,7 +1020,7 @@ const adminController = {
         });
       }
 
-      transaction.status = 'failed';
+      transaction.status = 'rejected';
       transaction.reviewedBy = req.user.userId;
       transaction.reviewedAt = new Date();
 
@@ -1078,6 +1085,21 @@ const adminController = {
       });
     } catch (error) {
       return res.status(500).json({ success: false, message: error.message });
+    }
+  },
+
+  async getWithdrawRequests(req, res) {
+    try {
+      const status = req.query.status || 'pending';
+      const filter = status === 'all' ? {} : { status };
+      const requests = await WithdrawRequest.find(filter)
+        .populate('userId', 'username email upiId balance')
+        .sort({ createdAt: -1 })
+        .lean();
+
+      return res.json({ requests });
+    } catch (error) {
+      return res.status(500).json({ error: error.message });
     }
   },
 };

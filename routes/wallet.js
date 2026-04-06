@@ -1,552 +1,472 @@
-const express = require('express');
-const mongoose = require('mongoose');
-
-const auth = require('../middleware/auth');
+const express = require("express");
+const auth = require("../middleware/auth");
+const DepositRequest = require("../models/DepositRequest");
+const WithdrawRequest = require("../models/WithdrawRequest");
+const PlatformFeeCollection = require("../models/PlatformFeeCollection");
+const WalletTransaction = require("../models/WalletTransaction");
+const cloudinaryUpload = require("../middleware/cloudinaryUpload.js");
 const adminAuth = require('../middleware/adminAuth');
-const cloudinaryUpload = require('../middleware/cloudinaryUpload');
-const Transaction = require('../models/Transaction');
-const WalletTransaction = require('../models/WalletTransaction');
+const User = require("../models/User");
 const {
+  creditWalletBalance,
+  debitWalletBalance,
   ensureWallet,
-  snapshotWallet,
-  settleExistingTransaction,
-} = require('../services/walletService');
+  getWalletSummary,
+  roundAmount,
+} = require("../services/walletService");
 
 const router = express.Router();
 
-const MIN_DEPOSIT = 50;
-const MIN_WITHDRAW = 500;
-const MAX_WITHDRAW = 5000;
+const MIN_WITHDRAW_AMOUNT = 500;
+const MAX_WITHDRAW_AMOUNT = 5000;
 const DAILY_WITHDRAW_LIMIT = 10000;
 
-function roundAmount(amount) {
-  return Math.round(Number(amount || 0) * 100) / 100;
+
+
+function isValidUpiId(value) {
+  return typeof value === "string" && /^[\w.\-]{2,256}@[a-zA-Z]{2,64}$/.test(value.trim());
 }
 
-function getAuthUserId(req) {
-  return req.user.userId || req.user.id;
+function resolveUserId(req) {
+  return req.user?.id || req.user?.userId || null;
 }
 
-function buildWalletResponse(wallet) {
-  const snapshot = snapshotWallet(wallet);
-  return {
-    depositBalance: snapshot.depositBalance,
-    winningBalance: snapshot.winningBalance,
-    bonusBalance: snapshot.bonusBalance,
-    totalBalance: snapshot.totalBalance,
-  };
-}
-
-function buildTransactionFilter(baseQuery = {}, { status, type }) {
-  const query = { ...baseQuery };
-
-  if (status && status !== 'all') {
-    query.status = status;
+router.get("/", auth, async (req, res) => {
+  const userId = resolveUserId(req);
+  if (!userId) {
+    return res.status(401).json({ message: "Unauthorized", code: "NO_USER_ID" });
   }
 
-  if (type === 'game') {
-    query.type = { $in: ['game_entry', 'game_win'] };
-  } else if (type && type !== 'all') {
-    query.type = type;
-  }
-
-  return query;
-}
-
-router.get('/', auth, async (req, res) => {
   try {
-    const wallet = await ensureWallet(getAuthUserId(req));
-
-    return res.json({
-      success: true,
-      wallet: buildWalletResponse(wallet),
-    });
+    const summary = await getWalletSummary(userId, true);
+    return res.json(summary);
   } catch (error) {
-    return res.status(500).json({ success: false, message: error.message });
+    console.error("GET /wallet failed", { userId, error });
+    return res.status(500).json({ message: error.message || "Server error", code: error.code || "INTERNAL_ERROR", error: error.message });
   }
 });
 
-router.get('/transactions', auth, async (req, res) => {
+router.get("/transactions", auth, async (req, res) => {
+  const userId = req.user?.id || req.user?.userId;
+  if (!userId) {
+    return res.status(401).json({ message: "Unauthorized", code: "NO_USER_ID" });
+  }
+
   try {
-    const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 50, 1), 100);
-    const transactions = await WalletTransaction.find({ userId: getAuthUserId(req) })
+    const limit = Math.min(Number(req.query.limit) || 50, 100);
+    const transactions = await WalletTransaction.find({ userId })
       .sort({ createdAt: -1 })
       .limit(limit)
       .lean();
 
-    return res.json({
-      success: true,
-      transactions,
-    });
+    return res.json({ transactions });
   } catch (error) {
-    return res.status(500).json({ success: false, message: error.message });
+    return res.status(500).json({ error: error.message });
   }
 });
 
-router.post('/deposit-requests', auth, cloudinaryUpload('file'), async (req, res) => {
-  try {
-    const userId = getAuthUserId(req);
-    const amount = roundAmount(req.body.amount);
-    const utrNo = String(req.body.utrNo || req.body.utr || '').trim().toUpperCase();
-    const upiId = String(req.body.upiId || '').trim();
-    const screenshotUrl = req.uploadedData?.url || null;
+router.get("/deposit-requests", auth, async (req, res) => {
+  const userId = resolveUserId(req);
+  if (!userId) return res.status(401).json({ message: "Unauthorized", code: "NO_USER_ID" });
 
-    if (!amount || amount < MIN_DEPOSIT) {
-      return res.status(400).json({
-        success: false,
-        message: `Minimum deposit is Rs ${MIN_DEPOSIT}`,
-      });
+  try {
+    const requests = await DepositRequest.find({ userId })
+      .sort({ createdAt: -1 })
+      .lean();
+
+    return res.json({ requests });
+  } catch (error) {
+    console.error("GET /wallet/deposit-requests failed", { userId, error });
+    return res.status(500).json({ message: error.message || "Server error", code: error.code || "INTERNAL_ERROR", error: error.message });
+  }
+});
+
+router.post("/deposit-requests", auth, cloudinaryUpload("file"), async (req, res) => {
+  const userId = resolveUserId(req);
+  if (!userId) return res.status(401).json({ message: "Unauthorized", code: "NO_USER_ID" });
+
+  try {
+
+    if (!req.uploadedData) {
+      return res.status(400).json({ success: false, message: "File upload failed" });
+    }
+    const amount = roundAmount(req.body.amount);
+    const utrNo = String(req.body.utr || req.body.utrNo || "").trim().toUpperCase();
+    const screenshotUrl = String(req.uploadedData.url || "").trim();
+
+    if (amount < 50) {
+      return res.status(400).json({ error: "Minimum deposit amount is Rs 50" });
     }
 
     if (!utrNo) {
-      return res.status(400).json({ success: false, message: 'UTR/Transaction ID is required' });
+      return res.status(400).json({ error: "UTR is required" });
     }
 
-    if (!upiId) {
-      return res.status(400).json({ success: false, message: 'UPI ID is required' });
+    const existing = await DepositRequest.findOne({ utrNo });
+    if (existing) {
+      return res.status(400).json({ error: "UTR already submitted" });
     }
 
-    if (!screenshotUrl) {
-      return res.status(400).json({ success: false, message: 'Payment screenshot is required' });
-    }
-
-    const duplicate = await Transaction.findOne({
-      type: 'deposit',
+    const request = await DepositRequest.create({
+      userId,
+      amount,
       utrNo,
-    }).lean();
-
-    if (duplicate) {
-      return res.status(409).json({ success: false, message: 'This UTR has already been submitted' });
-    }
-
-    const wallet = await ensureWallet(userId);
-    const [transaction] = await Transaction.create([
-      {
-        walletId: wallet._id,
-        userId,
-        type: 'deposit',
-        status: 'pending',
-        amount: 0,
-        requestedAmount: amount,
-        bucket: 'deposit_balance',
-        referenceId: `deposit:req:${utrNo}`,
-        description: `Deposit request pending | UTR: ${utrNo}`,
-        upiId,
-        utrNo,
-        screenshotUrl,
-        metadata: {
-          requestSource: 'wallet_api',
-        },
-        balanceSnapshot: {
-          before: snapshotWallet(wallet),
-          after: snapshotWallet(wallet),
-        },
-      },
-    ]);
-
-    return res.status(201).json({
-      success: true,
-      message: 'Deposit request submitted successfully',
-      request: transaction,
+      screenshotUrl,
+      status: "pending",
     });
+
+    return res.status(201).json({ message: "Deposit request created", request });
   } catch (error) {
-    console.error('Deposit request error:', error);
-    
-    if (error?.code === 11000) {
-      return res.status(409).json({ success: false, message: 'Duplicate reference detected' });
-    }
-
-    return res.status(500).json({ 
-      success: false, 
-      message: error.message || 'Deposit request failed',
-      error: process.env.NODE_ENV === 'development' ? error.toString() : undefined
-    });
+    return res.status(500).json({ error: error.message });
   }
 });
 
-router.post('/withdraw-requests', auth, async (req, res) => {
+router.get("/withdraw-requests", auth, async (req, res) => {
+  const userId = resolveUserId(req);
+  if (!userId) return res.status(401).json({ message: "Unauthorized", code: "NO_USER_ID" });
+
   try {
-    const userId = getAuthUserId(req);
-    const amount = roundAmount(req.body.amount);
-    const upiId = String(req.body.upiId || '').trim();
-    const note = String(req.body.note || '').trim();
+    const requests = await WithdrawRequest.find({ userId })
+      .sort({ createdAt: -1 })
+      .lean();
 
-    if (!amount || amount < MIN_WITHDRAW || amount > MAX_WITHDRAW) {
-      return res.status(400).json({
-        success: false,
-        message: `Withdrawal must be between Rs ${MIN_WITHDRAW} and Rs ${MAX_WITHDRAW}`,
-      });
-    }
+    return res.json({ requests });
+  } catch (error) {
+    console.error("GET /wallet/withdraw-requests failed", { userId, error });
+    return res.status(500).json({ message: error.message || "Server error", code: error.code || "INTERNAL_ERROR", error: error.message });
+  }
+});
 
-    if (!upiId) {
-      return res.status(400).json({ success: false, message: 'UPI ID is required' });
-    }
+router.post("/withdraw-requests", auth, async (req, res) => {
+  const userId = resolveUserId(req);
+  if (!userId) return res.status(401).json({ message: "Unauthorized", code: "NO_USER_ID" });
 
+  try {
     const wallet = await ensureWallet(userId);
-    if (roundAmount(wallet.winningBalance) < amount) {
-      return res.status(400).json({
-        success: false,
-        message: 'Withdrawals are allowed from winning balance only',
-      });
+    const amount = roundAmount(req.body.amount);
+    const upiId = String(req.body.upi_id || req.body.upiId || "").trim();
+
+    if (amount < MIN_WITHDRAW_AMOUNT) {
+      return res.status(400).json({ error: `Minimum withdraw amount is Rs ${MIN_WITHDRAW_AMOUNT}` });
+    }
+
+    if (amount > MAX_WITHDRAW_AMOUNT) {
+      return res.status(400).json({ error: `Maximum withdraw amount is Rs ${MAX_WITHDRAW_AMOUNT}` });
+    }
+
+    if (!isValidUpiId(upiId)) {
+      return res.status(400).json({ error: "Valid UPI ID is required" });
+    }
+
+    const totalBalance = wallet.depositBalance + wallet.winningBalance + wallet.bonusBalance;
+    if (totalBalance < amount) {
+      return res.status(400).json({ error: `Insufficient balance. Need Rs${amount.toFixed(2)}, available Rs${totalBalance.toFixed(2)}` });
     }
 
     const startOfDay = new Date();
     startOfDay.setHours(0, 0, 0, 0);
-
-    const [dailyTotals] = await WalletTransaction.aggregate([
+    const todayWithdrawals = await WithdrawRequest.aggregate([
       {
         $match: {
-          userId: new mongoose.Types.ObjectId(userId),
-          type: 'withdraw',
-          status: { $in: ['pending', 'approved', 'paid'] },
+          userId: wallet.userId,
           createdAt: { $gte: startOfDay },
+          status: { $in: ["pending", "approved", "paid"] },
         },
       },
       {
         $group: {
           _id: null,
-          total: { $sum: '$requestedAmount' },
+          total: { $sum: "$amount" },
         },
       },
     ]);
 
-    const todaysAmount = roundAmount(dailyTotals?.total || 0);
-    if (todaysAmount + amount > DAILY_WITHDRAW_LIMIT) {
-      return res.status(400).json({
-        success: false,
-        message: `Daily withdrawal limit is Rs ${DAILY_WITHDRAW_LIMIT}`,
-      });
+    const usedToday = todayWithdrawals[0]?.total || 0;
+    if (usedToday + amount > DAILY_WITHDRAW_LIMIT) {
+      return res.status(400).json({ error: `Daily withdraw limit is Rs ${DAILY_WITHDRAW_LIMIT}` });
     }
 
-    const [transaction] = await WalletTransaction.create([
-      {
-        walletId: wallet._id,
-        userId,
-        type: 'withdraw',
-        status: 'pending',
-        amount: 0,
-        requestedAmount: amount,
-        bucket: 'winning_balance',
-        referenceId: `withdraw:req:${userId}:${Date.now()}`,
-        description: note || 'Withdrawal request pending',
-        upiId,
+    const request = await WithdrawRequest.create({
+      userId,
+      amount,
+      upiId,
+      status: "pending",
+    });
+
+    await User.findByIdAndUpdate(userId, { upiId });
+
+    return res.status(201).json({ message: "Withdraw request created", request });
+  } catch (error) {
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+router.get("/admin/deposit-requests", adminAuth(), async (req, res) => {
+  try {
+    const status = req.query.status || "pending";
+    const filter = status === "all" ? {} : { status };
+    const requests = await DepositRequest.find(filter)
+      .populate("userId", "username email")
+      .sort({ createdAt: -1 })
+      .lean();
+
+    return res.json({ requests });
+  } catch (error) {
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+router.patch("/admin/deposit-requests/:id", adminAuth(), async (req, res) => {
+  const adminId = resolveUserId(req);
+  if (!adminId) return res.status(401).json({ message: "Unauthorized", code: "NO_USER_ID" });
+
+  try {
+    const request = await DepositRequest.findById(req.params.id);
+    if (!request) {
+      return res.status(404).json({ error: "Deposit request not found" });
+    }
+
+    if (request.status !== "pending") {
+      return res.status(400).json({ error: "Deposit request already processed" });
+    }
+
+    const action = String(req.body.action || "").trim().toLowerCase();
+    if (!["approve", "reject"].includes(action)) {
+      return res.status(400).json({ error: "Action must be approve or reject" });
+    }
+
+    if (action === "approve") {
+      const approveAmount = req.body.amount ? roundAmount(req.body.amount) : request.amount;
+      if (approveAmount <= 0) {
+        return res.status(400).json({ error: "Approved amount must be greater than zero" });
+      }
+
+      await creditWalletBalance({
+        userId: request.userId,
+        type: "deposit",
+        amount: approveAmount,
+        bucket: "deposit_balance",
+        referenceId: request._id.toString(),
         metadata: {
-          requestSource: 'wallet_api',
+          utrNo: request.utrNo,
+          screenshotUrl: request.screenshotUrl,
+          originalAmount: request.amount,
+          approvedAmount: approveAmount,
         },
-        balanceSnapshot: {
-          before: snapshotWallet(wallet),
-          after: snapshotWallet(wallet),
-        },
-      },
-    ]);
+        description: `Deposit approval for UTR ${request.utrNo}`,
+      });
 
-    return res.status(201).json({
-      success: true,
-      message: 'Withdrawal request submitted successfully',
-      request: transaction,
-    });
+      request.status = "approved";
+      request.approvedAmount = approveAmount;
+      request.reviewedAt = new Date();
+      request.reviewedBy = adminId;
+      await request.save();
+      return res.json({ message: `Deposit request approved for Rs ${approveAmount.toFixed(2)}` });
+    }
+
+    request.status = "rejected";
+    request.reviewedAt = new Date();
+    request.reviewedBy = adminId;
+    await request.save();
+    return res.json({ message: "Deposit request rejected" });
   } catch (error) {
-    return res.status(500).json({ success: false, message: error.message });
+    return res.status(500).json({ error: error.message });
   }
 });
 
-router.get('/admin/deposit-requests', adminAuth(), async (req, res) => {
+router.get("/admin/withdraw-requests", adminAuth(), async (req, res) => {
   try {
-    const status = String(req.query.status || 'pending');
-    const requests = await WalletTransaction.find(
-      buildTransactionFilter({ type: 'deposit' }, { status })
-    )
-      .populate('userId', 'username firstName lastName email mobile balance')
-      .populate('reviewedBy', 'username')
+    const status = req.query.status || "pending";
+    const filter = status === "all" ? {} : { status };
+    const requests = await WithdrawRequest.find(filter)
+      .populate("userId", "username email upiId")
       .sort({ createdAt: -1 })
-      .limit(100)
       .lean();
 
-    return res.json({
-      success: true,
-      requests,
-    });
+    return res.json({ requests });
   } catch (error) {
-    return res.status(500).json({ success: false, message: error.message });
+    return res.status(500).json({ error: error.message });
   }
 });
 
-router.patch('/admin/deposit-requests/:id', adminAuth(['super_admin', 'admin']), async (req, res) => {
-  const session = await mongoose.startSession();
-
+router.get("/admin/transactions", adminAuth(), async (req, res) => {
   try {
-    const action = String(req.body.action || '').trim().toLowerCase();
-    const approvedAmount = roundAmount(req.body.amount);
+    const limit = Math.min(Number(req.query.limit) || 100, 250);
+    const type = String(req.query.type || "game").trim().toLowerCase();
 
-    let updatedTransaction;
-
-    await session.withTransaction(async () => {
-      const transaction = await WalletTransaction.findOne({
-        _id: req.params.id,
-        type: 'deposit',
-      }).session(session);
-
-      if (!transaction) {
-        throw new Error('REQUEST_NOT_FOUND');
-      }
-
-      if (transaction.status !== 'pending') {
-        throw new Error('REQUEST_ALREADY_REVIEWED');
-      }
-
-      if (action === 'approve') {
-        if (!approvedAmount || approvedAmount <= 0) {
-          throw new Error('INVALID_AMOUNT');
-        }
-
-        const settled = await settleExistingTransaction({
-          transaction,
-          amount: approvedAmount,
-          status: 'approved',
-          bucket: 'deposit_balance',
-          description: `Deposit approved | UTR: ${transaction.utrNo || 'N/A'}`,
-          adminUserId: getAuthUserId(req),
-          processedAt: new Date(),
-          session,
-        });
-        updatedTransaction = settled.transaction;
-      } else if (action === 'reject') {
-        transaction.status = 'rejected';
-        transaction.reviewedBy = getAuthUserId(req);
-        transaction.reviewedAt = new Date();
-        transaction.description = `Deposit rejected | UTR: ${transaction.utrNo || 'N/A'}`;
-        await transaction.save({ session });
-        updatedTransaction = transaction;
-      } else {
-        throw new Error('INVALID_ACTION');
-      }
-    });
-
-    return res.json({
-      success: true,
-      message: `Deposit request ${action}d successfully`,
-      request: updatedTransaction,
-    });
-  } catch (error) {
-    if (error.message === 'REQUEST_NOT_FOUND') {
-      return res.status(404).json({ success: false, message: 'Deposit request not found' });
-    }
-    if (error.message === 'REQUEST_ALREADY_REVIEWED') {
-      return res.status(400).json({ success: false, message: 'Deposit request already reviewed' });
-    }
-    if (error.message === 'INVALID_AMOUNT') {
-      return res.status(400).json({ success: false, message: 'Valid approval amount is required' });
-    }
-    if (error.message === 'INVALID_ACTION') {
-      return res.status(400).json({ success: false, message: 'Action must be approve or reject' });
+    let typeFilter = {};
+    if (type === "game") {
+      typeFilter = { type: { $in: ["game_entry", "game_win"] } };
+    } else if (type !== "all") {
+      typeFilter = { type };
     }
 
-    return res.status(500).json({ success: false, message: error.message });
-  } finally {
-    await session.endSession();
-  }
-});
-
-router.get('/admin/withdraw-requests', adminAuth(), async (req, res) => {
-  try {
-    const status = String(req.query.status || 'pending');
-    const requests = await WalletTransaction.find(
-      buildTransactionFilter({ type: 'withdraw' }, { status })
-    )
-      .populate('userId', 'username firstName lastName email mobile balance')
-      .populate('reviewedBy', 'username')
-      .sort({ createdAt: -1 })
-      .limit(100)
-      .lean();
-
-    return res.json({
-      success: true,
-      requests,
-    });
-  } catch (error) {
-    return res.status(500).json({ success: false, message: error.message });
-  }
-});
-
-router.patch('/admin/withdraw-requests/:id', adminAuth(['super_admin', 'admin']), async (req, res) => {
-  const session = await mongoose.startSession();
-
-  try {
-    const action = String(req.body.action || '').trim().toLowerCase();
-    let updatedTransaction;
-
-    await session.withTransaction(async () => {
-      const transaction = await WalletTransaction.findOne({
-        _id: req.params.id,
-        type: 'withdraw',
-      }).session(session);
-
-      if (!transaction) {
-        throw new Error('REQUEST_NOT_FOUND');
-      }
-
-      if (action === 'approve') {
-        if (transaction.status !== 'pending') {
-          throw new Error('INVALID_WITHDRAW_STATE');
-        }
-
-        transaction.status = 'approved';
-        transaction.reviewedBy = getAuthUserId(req);
-        transaction.reviewedAt = new Date();
-        transaction.description = 'Withdrawal approved and queued for payment';
-        await transaction.save({ session });
-        updatedTransaction = transaction;
-        return;
-      }
-
-      if (action === 'reject') {
-        if (!['pending', 'approved'].includes(transaction.status)) {
-          throw new Error('INVALID_WITHDRAW_STATE');
-        }
-
-        transaction.status = 'rejected';
-        transaction.reviewedBy = getAuthUserId(req);
-        transaction.reviewedAt = new Date();
-        transaction.description = 'Withdrawal rejected';
-        await transaction.save({ session });
-        updatedTransaction = transaction;
-        return;
-      }
-
-      if (action === 'paid') {
-        if (!['pending', 'approved'].includes(transaction.status)) {
-          throw new Error('INVALID_WITHDRAW_STATE');
-        }
-
-        const settled = await settleExistingTransaction({
-          transaction,
-          status: 'paid',
-          description: 'Withdrawal paid',
-          adminUserId: getAuthUserId(req),
-          processedAt: new Date(),
-          preferredBuckets: ['winning_balance'],
-          session,
-        });
-        updatedTransaction = settled.transaction;
-        return;
-      }
-
-      throw new Error('INVALID_ACTION');
-    });
-
-    return res.json({
-      success: true,
-      message: `Withdrawal request ${action} processed successfully`,
-      request: updatedTransaction,
-    });
-  } catch (error) {
-    if (error.message === 'REQUEST_NOT_FOUND') {
-      return res.status(404).json({ success: false, message: 'Withdrawal request not found' });
-    }
-    if (error.message === 'INVALID_WITHDRAW_STATE') {
-      return res.status(400).json({ success: false, message: 'This action is not allowed in the current request state' });
-    }
-    if (error.message === 'INSUFFICIENT_BALANCE') {
-      return res.status(400).json({ success: false, message: 'Winning balance is insufficient for payout' });
-    }
-    if (error.message === 'INVALID_ACTION') {
-      return res.status(400).json({ success: false, message: 'Action must be approve, reject, or paid' });
-    }
-
-    return res.status(500).json({ success: false, message: error.message });
-  } finally {
-    await session.endSession();
-  }
-});
-
-router.get('/admin/transactions', adminAuth(), async (req, res) => {
-  try {
-    const type = String(req.query.type || 'all');
-    const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 100, 1), 200);
-    const transactions = await WalletTransaction.find(buildTransactionFilter({}, { type }))
-      .populate('userId', 'username firstName lastName email')
+    const transactions = await WalletTransaction.find(typeFilter)
+      .populate("userId", "username email")
       .sort({ createdAt: -1 })
       .limit(limit)
       .lean();
 
-    return res.json({
-      success: true,
-      transactions,
-    });
+    return res.json({ transactions });
   } catch (error) {
-    return res.status(500).json({ success: false, message: error.message });
+    return res.status(500).json({ error: error.message });
   }
 });
 
-router.get('/admin/platform-fees', adminAuth(), async (req, res) => {
+router.get("/admin/platform-fees", adminAuth(), async (req, res) => {
   try {
-    const gameKey = String(req.query.gameKey || '').trim();
-    const matchFilter = gameKey ? { 'metadata.gameKey': gameKey } : {};
+    const limit = Math.min(Number(req.query.limit) || 100, 250);
+    const gameKey = String(req.query.gameKey || "all").trim().toLowerCase();
 
-    const aggregates = await WalletTransaction.aggregate([
-      {
-        $match: {
-          type: { $in: ['game_entry', 'game_win'] },
-          status: { $in: ['completed', 'approved', 'paid'] },
-          ...matchFilter,
-        },
-      },
+    const filter = gameKey === "all" ? {} : { gameKey };
+    const records = await PlatformFeeCollection.find(filter)
+      .sort({ createdAt: -1 })
+      .limit(limit)
+      .lean();
+
+    const aggregate = await PlatformFeeCollection.aggregate([
+      { $match: filter },
       {
         $group: {
-          _id: {
-            gameKey: '$metadata.gameKey',
-            matchId: '$metadata.matchId',
-          },
-          totalEntries: {
-            $sum: {
-              $cond: [{ $eq: ['$type', 'game_entry'] }, { $abs: '$amount' }, 0],
-            },
-          },
-          totalPayouts: {
-            $sum: {
-              $cond: [{ $eq: ['$type', 'game_win'] }, '$amount', 0],
-            },
-          },
-          explicitPlatformFee: {
-            $sum: {
-              $ifNull: ['$metadata.platformFee', 0],
-            },
-          },
-        },
-      },
-      {
-        $project: {
-          _id: 0,
-          gameKey: '$_id.gameKey',
-          matchId: '$_id.matchId',
-          totalEntries: 1,
-          totalPayouts: 1,
-          platformFee: {
-            $cond: [
-              { $gt: ['$explicitPlatformFee', 0] },
-              '$explicitPlatformFee',
-              { $subtract: ['$totalEntries', '$totalPayouts'] },
-            ],
-          },
-        },
-      },
-      {
-        $sort: {
-          platformFee: -1,
+          _id: null,
+          totalCollected: { $sum: "$platformFee" },
+          totalMatches: { $sum: 1 },
         },
       },
     ]);
 
-    const totalPlatformFee = aggregates.reduce((sum, row) => sum + roundAmount(row.platformFee), 0);
+    const byGame = await PlatformFeeCollection.aggregate([
+      { $match: filter },
+      {
+        $group: {
+          _id: "$gameKey",
+          gameLabel: { $first: "$gameLabel" },
+          totalCollected: { $sum: "$platformFee" },
+          totalMatches: { $sum: 1 },
+        },
+      },
+      { $sort: { totalCollected: -1 } },
+    ]);
 
     return res.json({
-      success: true,
-      gameKey: gameKey || 'all',
-      totalPlatformFee: roundAmount(totalPlatformFee),
-      records: aggregates,
+      summary: {
+        totalCollected: roundAmount(aggregate[0]?.totalCollected || 0),
+        totalMatches: aggregate[0]?.totalMatches || 0,
+      },
+      byGame,
+      records,
     });
   } catch (error) {
-    return res.status(500).json({ success: false, message: error.message });
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+router.patch("/admin/withdraw-requests/:id", adminAuth(), async (req, res) => {
+  const adminId = resolveUserId(req);
+  if (!adminId) return res.status(401).json({ message: "Unauthorized", code: "NO_USER_ID" });
+
+  try {
+    const request = await WithdrawRequest.findById(req.params.id);
+    if (!request) {
+      return res.status(404).json({ error: "Withdraw request not found" });
+    }
+
+    const action = String(req.body.action || "").trim().toLowerCase();
+    if (!["approve", "reject", "paid"].includes(action)) {
+      return res.status(400).json({ error: "Action must be approve, reject, or paid" });
+    }
+
+    if (action === "approve") {
+      if (request.status !== "pending") {
+        return res.status(400).json({ error: "Only pending requests can be approved" });
+      }
+
+      request.status = "approved";
+      request.reviewedAt = new Date();
+      request.reviewedBy = adminId;
+      await request.save();
+
+      return res.json({ message: "Withdraw request approved", request });
+    }
+
+    if (action === "reject") {
+      if (!["pending", "approved"].includes(request.status)) {
+        return res.status(400).json({ error: "Only pending or approved requests can be rejected" });
+      }
+      request.status = "rejected";
+      request.reviewedAt = new Date();
+      request.processedAt = new Date();
+      request.reviewedBy = adminId;
+      await request.save();
+      return res.json({ message: "Withdraw request rejected" });
+    }
+
+    if (request.status !== "approved") {
+      return res.status(400).json({ error: "Withdraw request must be approved before marking paid" });
+    }
+
+    const wallet = await ensureWallet(request.userId);
+    const totalBalance = wallet.depositBalance + wallet.winningBalance + wallet.bonusBalance;
+    if (totalBalance < request.amount) {
+      return res.status(400).json({ error: "Insufficient balance at payout time" });
+    }
+
+    await debitWalletBalance({
+      userId: request.userId,
+      type: "withdraw",
+      amount: request.amount,
+      preferredBuckets: ["bonus_balance", "deposit_balance", "winning_balance"],
+      referenceId: `${request._id}:withdraw`,
+      metadata: {
+        upiId: request.upiId,
+      },
+      description: `Withdraw payout to ${request.upiId}`,
+    });
+
+    request.status = "paid";
+    request.processedAt = new Date();
+    request.reviewedAt = new Date();
+    request.reviewedBy = adminId;
+    await request.save();
+    return res.json({ message: "Withdraw request marked paid" });
+  } catch (error) {
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+router.post("/deduct", auth, async (req, res) => {
+  const userId = resolveUserId(req);
+  if (!userId) return res.status(401).json({ message: "Unauthorized", code: "NO_USER_ID" });
+
+  try {
+    const { amount, type = 'general', metadata = {} } = req.body;
+    const gameKey = metadata.game || 'unknown';
+
+    const wallet = await require("../services/walletService").debitGameEntry(
+      userId,
+      amount,
+      `game:${gameKey}:${Date.now()}`,
+      {
+        game: gameKey,
+        type,
+        ...metadata
+      }
+    );
+
+    const { getWalletTotal, roundAmount } = require("../services/walletService");
+
+    res.json({
+      success: true,
+      message: 'Entry fee deducted successfully',
+      wallet: {
+        total_balance: getWalletTotal(wallet),
+        deposit_balance: roundAmount(wallet.depositBalance),
+        winning_balance: roundAmount(wallet.winningBalance),
+        bonus_balance: roundAmount(wallet.bonusBalance)
+      }
+    });
+  } catch (error) {
+    res.status(400).json({ error: error.message });
   }
 });
 

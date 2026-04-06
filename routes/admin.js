@@ -18,6 +18,7 @@ router.get('/transactions', adminAuth(), adminController.getTransactions);
 router.get('/deposit-requests', adminAuth(), adminController.getDepositRequests);
 router.post('/deposit-requests/:id/approve', adminAuth(['super_admin', 'admin']), adminController.approveDepositRequest);
 router.post('/deposit-requests/:id/reject', adminAuth(['super_admin', 'admin']), adminController.rejectDepositRequest);
+router.get('/withdraw-requests', adminAuth(), adminController.getWithdrawRequests);
 router.post('/withdraw/:id/approve', adminAuth(['super_admin', 'admin']), adminController.approveWithdraw);
 router.post('/withdraw/:id/reject', adminAuth(['super_admin', 'admin']), adminController.rejectWithdraw);
 

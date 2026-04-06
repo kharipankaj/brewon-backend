@@ -1,3 +1,4 @@
+const mongoose = require('mongoose');
 const User = require('../models/User');
 const Wallet = require('../models/Wallet');
 const WalletTransaction = require('../models/WalletTransaction');
@@ -347,10 +348,82 @@ async function settleExistingTransaction({
   return { wallet: deltaResult.wallet, transaction: tx };
 }
 
+function getWalletTotal(wallet) {
+  return roundAmount(wallet.depositBalance + wallet.winningBalance + wallet.bonusBalance);
+}
+
+function toObjectId(value) {
+  if (value instanceof mongoose.Types.ObjectId) {
+    return value;
+  }
+
+  if (!mongoose.Types.ObjectId.isValid(value)) {
+    const error = new Error('INVALID_USER_ID');
+    error.code = 'INVALID_USER_ID';
+    throw error;
+  }
+
+  return new mongoose.Types.ObjectId(value);
+}
+
+async function getWalletSummary(userId, includeTransactions = false) {
+  const wallet = await ensureWallet(userId);
+  const snapshot = snapshotWallet(wallet);
+  const normalizedUserId = toObjectId(userId);
+
+  // Calculate real deposits: sum of completed deposit transactions
+  const depositAgg = await WalletTransaction.aggregate([
+    { $match: { userId: normalizedUserId, type: 'deposit', status: 'completed' } },
+    { $group: { _id: null, total: { $sum: '$amount' } } }
+  ]);
+  const realDeposits = roundAmount(depositAgg[0]?.total || 0);
+
+  // Calculate referral earnings: assuming it's from welcome_bonus or check metadata
+  const referralAgg = await WalletTransaction.aggregate([
+    { $match: { userId: normalizedUserId, type: 'welcome_bonus', status: 'completed' } },
+    { $group: { _id: null, total: { $sum: '$amount' } } }
+  ]);
+  const referralEarnings = roundAmount(referralAgg[0]?.total || 0);
+
+  const summary = {
+    deposit_balance: snapshot.depositBalance,
+    winning_balance: snapshot.winningBalance,
+    bonus_balance: snapshot.bonusBalance,
+    total_balance: snapshot.totalBalance,
+    real_deposits: realDeposits,
+    referral_earnings: referralEarnings,
+  };
+
+  if (includeTransactions) {
+    // Add transaction summary if needed
+  }
+
+  return summary;
+}
+
+async function syncWalletUsername(userId) {
+  // TODO: implement if needed
+}
+
+async function debitGameEntry(userId, amount, referenceId, metadata = {}) {
+  return await debitWalletBalance({
+    userId,
+    type: 'game_entry',
+    amount,
+    referenceId,
+    metadata,
+  });
+}
+
 module.exports = {
   ensureWallet,
   snapshotWallet,
   creditWalletBalance,
   debitWalletBalance,
   settleExistingTransaction,
+  getWalletTotal,
+  getWalletSummary,
+  syncWalletUsername,
+  debitGameEntry,
+  roundAmount,
 };
