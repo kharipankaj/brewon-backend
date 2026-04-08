@@ -1,0 +1,2 @@
+services:&#10;  - type: web&#10;    name: brewon-backend&#10;    env: node&#10;    plan: free&#10;    buildCommand: "npm install"&#10;    startCommand: "npm start"&#10;    envVars:&#10;      - key: MONGO_URL&#10;        sync: false  # User must add manually&#10;      - key: JWT_SECRET&#10;        generateValue: true&#10;      - key: REFRESH_TOKEN_SECRET&#10;        generateValue: true&#10;      - key: NODE_ENV&#10;        value: production&#10;    autoDeploy: true"
+
