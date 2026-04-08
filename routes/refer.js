@@ -13,5 +13,11 @@ router.get('/', protect, referralController.getMyReferrals);
 // POST /api/refer/validate - Validate referral code (public)
 router.post('/validate', referralController.validateReferralCode);
 
+// POST /api/refer/claim - Claim referral bonus (protected)
+router.post('/claim', protect, referralController.claimReferralBonus);
+
+// GET /api/refer/leaderboard - Leaderboard (protected)
+router.get('/leaderboard', protect, referralController.getLeaderboard);
+
 module.exports = router;
 

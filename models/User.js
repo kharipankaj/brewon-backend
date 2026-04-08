@@ -37,13 +37,15 @@ const userSchema = new mongoose.Schema({
     unique: true,
     lowercase: true,
     trim: true,
-    sparse: true
+    sparse: true,
+    required: false
   },
   mobile: {
     type: String,
     unique: true,
     sparse: true,
-    trim: true
+    trim: true,
+    required: false
   },
 
   password: {

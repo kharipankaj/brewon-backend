@@ -111,8 +111,8 @@ exports.signup = async (req, res) => {
     
     const userData = {
       username: finalUsername,
-      email: email ? email.toLowerCase().trim() : undefined,
-      mobile: normalizedMobile,
+      ...(email && { email: email.toLowerCase().trim() }),
+      ...(normalizedMobile && { mobile: normalizedMobile }),
       password,  // raw - middleware hashes
       firstName: firstName.trim(),
       lastName: lastName ? lastName.trim() : '',

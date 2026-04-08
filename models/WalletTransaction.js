@@ -15,6 +15,7 @@ const transactionType = [
   'game_entry',
   'game_win',
   'welcome_bonus',
+  'referral',
 ];
 
 const bucketType = ['deposit_balance', 'winning_balance', 'bonus_balance', 'mixed'];

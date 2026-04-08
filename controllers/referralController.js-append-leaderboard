@@ -1,0 +1,55 @@
+/**
+ * Get referral leaderboard - top referrers
+ * GET /api/refer/leaderboard
+ * Limit 10, admin can ?limit=50
+ */
+exports.getLeaderboard = async (req, res) => {
+  try {
+    const limit = Math.min(parseInt(req.query.limit || 10), 50);
+    
+    const leaderboard = await User.aggregate([
+      { $match: { role: 'user' } }, // Only users
+      {
+        $project: {
+          username: 1,
+          firstName: 1,
+          referralCode: 1,
+          referralEarnings: { $ifNull: ['$referralEarnings', 0] },
+          totalReferrals: { $size: { $ifNull: ['$referrals', []] } },
+          activeReferrals: {
+            $size: {
+              $filter: {
+                input: { $ifNull: ['$referrals', []] },
+                cond: { $in: ['$$this.status', ['joined', 'bonus_paid']] }
+              }
+            }
+          }
+        }
+      },
+      { $sort: { referralEarnings: -1, totalReferrals: -1 } },
+      { $limit: limit },
+      { $project: { password: 0 } }
+    ]);
+
+    res.json({
+      success: true,
+      data: {
+        limit,
+        count: leaderboard.length,
+        leaderboard: leaderboard.map((user, index) => ({
+          rank: index + 1,
+          username: user.username,
+          name: user.firstName || user.username,
+          code: user.referralCode,
+          earnings: `₹${user.referralEarnings.toLocaleString()}`,
+          totalReferrals: user.totalReferrals,
+          activeReferrals: user.activeReferrals
+        }))
+      }
+    });
+  } catch (error) {
+    console.error('Leaderboard error:', error);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+};
+

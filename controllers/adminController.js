@@ -404,16 +404,17 @@ const adminController = {
       }
 
       const hashedPassword = await bcrypt.hash(String(password), 12);
-      const user = await User.create({
+      const userData = {
         username: normalizedUsername,
         password: hashedPassword,
-        email: normalizedEmail,
+        ...(normalizedEmail && { email: normalizedEmail }),
         firstName: String(firstName).trim(),
         lastName: String(lastName).trim(),
         balance: Number(balance || 0),
         status,
         role,
-      });
+      };
+      const user = await User.create(userData);
 
       await logAdminActivity({
         adminId: req.user.userId,
