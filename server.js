@@ -101,7 +101,7 @@ function startGame() {
 }
 
 // ✅ SOCKET AUTH MIDDLEWARE - ENHANCED DEBUG LOGGING
-io.use((socket, next) => {
+io.use(async (socket, next) => {
   console.log('🔌 Socket connect attempt:', socket.id?.slice(0, 8));
   let token;
 
@@ -120,20 +120,8 @@ io.use((socket, next) => {
       }
     }
 
-    const isHMR =
-      !token ||
-      token.startsWith('__next') ||
-      socket.handshake.headers['next-router-prefetch'] !== undefined ||
-      (socket.request?.url || '').includes('/_next/webpack-hmr');
-
-    if (isHMR) {
-      console.log('🔌 HMR bypass - no auth required');
-      socket.user = null;
-      return next();
-    }
-
     if (!token) {
-      console.log('❌ No token provided');
+      console.log('❌ No token provided - blocking socket');
       return next(new Error('No token provided'));
     }
 
@@ -151,6 +139,20 @@ io.use((socket, next) => {
     };
 
     console.log('✅ Socket auth success:', socket.user.username, socket.user.userId?.slice(-4));
+
+    // 🔒 DB VALIDATION - Check user exists and active
+    try {
+      const User = require('./models/User');
+      const dbUser = await User.findById(socket.user.userId).select('status').lean();
+      if (!dbUser || dbUser.status !== 'active') {
+        console.log(`❌ Socket auth DB FAIL: userId ${socket.user.userId.slice(-4)} not found/active`);
+        return next(new Error('User not found or inactive'));
+      }
+      console.log('✅ Socket DB validated:', socket.user.username);
+    } catch (dbErr) {
+      console.error('❌ Socket DB check failed:', dbErr.message);
+      return next(new Error('User validation failed'));
+    }
 
     next();
 
@@ -202,7 +204,7 @@ io.on('connection', (socket) => {
 const adminIo = io.of('/admin');
 setAdminNamespace(adminIo);
 
-adminIo.use((socket, next) => {
+adminIo.use(async (socket, next) => {
   try {
     let token = socket.handshake.auth?.token;
 
@@ -231,6 +233,19 @@ adminIo.use((socket, next) => {
       role,
     };
 
+    // 🔒 ADMIN DB VALIDATION
+    try {
+      const User = require('./models/User');
+      const dbUser = await User.findById(socket.user.userId).select('status role').lean();
+      if (!dbUser || dbUser.status !== 'active' || !['super_admin', 'admin', 'staff', 'moderator'].includes(dbUser.role)) {
+        console.log(`❌ Admin socket DB FAIL: ${socket.user.username}`);
+        return next(new Error('Admin user not found or unauthorized'));
+      }
+    } catch (dbErr) {
+      console.error('❌ Admin DB check failed:', dbErr.message);
+      return next(new Error('Admin validation failed'));
+    }
+
     return next();
   } catch (error) {
     return next(new Error(`Authentication failed: ${error.message}`));
@@ -258,6 +273,7 @@ app.get('/', (req, res) => {
 });
 
 app.use('/api/admin', require('./routes/admin'));
+app.use('/api/refer', require('./routes/refer'));
 app.use('/refresh', require('./routes/refresh'));
 app.use('/signup', require('./routes/signup'));
 app.use('/profile', require('./routes/profile'));
@@ -268,6 +284,10 @@ app.use("/color", require("./routes/colorTrading"));
 app.use('/revenue', require('./routes/revenue'));
 app.use('/wallet', require('./routes/wallet'));
 app.use('/games', require('./routes/games'));
+// routes/ping.js
+app.get('/ping', (req, res) => {
+  res.status(200).json({ status: 'ok', time: Date.now() });
+});
 
 
 // ✅ 404

@@ -2,6 +2,7 @@ const bcrypt = require('bcryptjs');
 const Joi = require('joi');
 const User = require('../models/User');
 const { hashToken } = require('../utils/crypto');
+const { generateUniqueReferralCode } = require('../utils/referralUtils');
 const jwt = require('jsonwebtoken');
 
 const isProd = process.env.NODE_ENV === 'production';
@@ -70,8 +71,22 @@ exports.signup = async (req, res) => {
       });
     }
 
-    const { username, email, mobile: rawMobile, password, firstName, lastName } = req.body;
+    const { username, email, mobile: rawMobile, password, firstName, lastName, referralCode } = req.body;
     const normalizedMobile = normalizeMobile(rawMobile);
+    
+    // Handle referral code from signup
+    let referredBy = null;
+    if (referralCode) {
+      const referrer = await User.findOne({ 
+        $or: [
+          { referralCode: referralCode.toUpperCase().trim() },
+          { username: referralCode.toLowerCase().trim() }
+        ]
+      }).select('_id');
+      if (referrer) {
+        referredBy = referrer._id;
+      }
+    }
 
     // Check existing
     const existingQuery = { username: username.toLowerCase().trim() };
@@ -86,18 +101,7 @@ exports.signup = async (req, res) => {
       });
     }
 
-    // Hash password
-    const hashedPassword = await bcrypt.hash(password, 12);
-
-    // Create user
-    const user = await User.create({
-      username: username.toLowerCase().trim(),
-      email: email ? email.toLowerCase().trim() : undefined,
-      mobile: normalizedMobile,
-      password: hashedPassword,
-      firstName: firstName.trim(),
-      lastName: lastName ? lastName.trim() : ''
-    });
+          referenceId: `referral_signup_${finalUsername}`,
 
     const userObj = user.toObject();
     delete userObj.password;
@@ -109,7 +113,7 @@ exports.signup = async (req, res) => {
     });
 
   } catch (error) {
-    console.error('Signup error:', error);
+    console.error('Signup error:', error.message, error.stack);
     res.status(500).json({
       success: false,
       message: 'Server error during signup'
@@ -398,13 +402,13 @@ exports.getProfile = async (req, res) => {
         mobile: user.mobile,
         role: user.role,
         isVerified: user.isVerified,
-        balance: user.balance || 1000,  // Real balance
-        referralCode: user.username.toUpperCase(),
+        balance: user.balance || 0,
+        referralCode: user.referralCode,
         stats: {
-          totalGames: 0,
-          wins: 0,
-          winRate: 0,
-          referralEarnings: 0
+          totalGames: user.gamesPlayed || 0,
+          wins: user.totalWins || 0,
+          winRate: user.gamesPlayed ? ((user.totalWins / user.gamesPlayed) * 100).toFixed(1) : 0,
+          referralEarnings: user.referralEarnings || 0
         },
         recentTransactions: []
       }

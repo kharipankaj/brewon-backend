@@ -378,12 +378,49 @@ async function getWalletSummary(userId, includeTransactions = false) {
   ]);
   const realDeposits = roundAmount(depositAgg[0]?.total || 0);
 
-  // Calculate referral earnings: assuming it's from welcome_bonus or check metadata
+// Calculate referral earnings: sum referral type tx
   const referralAgg = await WalletTransaction.aggregate([
-    { $match: { userId: normalizedUserId, type: 'welcome_bonus', status: 'completed' } },
+    { 
+      $match: { 
+        userId: normalizedUserId, 
+        type: 'referral', 
+        status: 'completed',
+        'metadata.type': 'referral_bonus'
+      } 
+    },
     { $group: { _id: null, total: { $sum: '$amount' } } }
   ]);
   const referralEarnings = roundAmount(referralAgg[0]?.total || 0);
+
+  // Calculate total withdrawn: sum of completed withdraw transactions
+  const withdrawAgg = await WalletTransaction.aggregate([
+    { $match: { userId: normalizedUserId, type: 'withdraw', status: 'completed' } },
+    { $group: { _id: null, total: { $sum: '$amount' } } }
+  ]);
+  const totalWithdrawn = roundAmount(withdrawAgg[0]?.total || 0);
+
+  // Calculate net profit: game wins - game entries
+  const profitAgg = await WalletTransaction.aggregate([
+    { $match: { 
+      userId: normalizedUserId, 
+      status: 'completed', 
+      type: { $in: ['game_win', 'game_entry'] }
+    }},
+    { $group: { 
+      _id: null, 
+      wins: { $sum: { $cond: [{ $eq: ['$type', 'game_win'] }, '$amount', 0] } },
+      entries: { $sum: { $cond: [{ $eq: ['$type', 'game_entry'] }, { $abs: '$amount' }, 0 ] } }
+    }},
+    { $project: { net_profit: { $subtract: ['$wins', '$entries'] } } }
+  ]);
+  const netProfit = roundAmount(profitAgg[0]?.net_profit || 0);
+
+  // Recent transactions preview
+  const recentTransactions = await WalletTransaction.find({ userId: normalizedUserId })
+    .sort({ createdAt: -1 })
+    .limit(5)
+    .select('type amount status createdAt description')
+    .lean();
 
   const summary = {
     deposit_balance: snapshot.depositBalance,
@@ -392,6 +429,10 @@ async function getWalletSummary(userId, includeTransactions = false) {
     total_balance: snapshot.totalBalance,
     real_deposits: realDeposits,
     referral_earnings: referralEarnings,
+    total_deposited: realDeposits,
+    total_withdrawn: totalWithdrawn,
+    net_profit: netProfit,
+    recent_transactions: recentTransactions
   };
 
   if (includeTransactions) {

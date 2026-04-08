@@ -43,7 +43,7 @@ function initColorTrading(io, mongoose) {
 
     const ns = io.of(`/color-${mode.id}`);
 
-    ns.use((socket, next) => {
+    ns.use(async (socket, next) => {
       console.log(`[ColorTrading/${mode.id}] 🔌 Socket auth: ${socket.id.slice(0,8)}`);
 
       try {
@@ -54,13 +54,10 @@ function initColorTrading(io, mongoose) {
           if (match) token = decodeURIComponent(match.split('=')[1]);
         }
 
-        const isHMR = !token || token.startsWith('__next');
-        if (isHMR) {
-          socket.user = null;
-          return next();
+        if (!token) {
+          console.log(`[ColorTrading/${mode.id}] ❌ No token provided - blocking socket`);
+          return next(new Error('No token provided'));
         }
-
-        if (!token) return next(new Error('No token'));
 
         const decoded = jwt.verify(token, process.env.JWT_SECRET);
         socket.user = {
@@ -69,7 +66,17 @@ function initColorTrading(io, mongoose) {
           role: decoded.role || 'user',
         };
 
-        console.log(`[ColorTrading/${mode.id}] ✅ Auth:`, socket.user.username);
+        console.log(`[ColorTrading/${mode.id}] ✅ JWT Auth:`, socket.user.username);
+
+        // 🔒 DB VALIDATION - Check user exists and active
+        const User = require('./models/User');
+        const dbUser = await User.findById(socket.user.userId).select('status').lean();
+        if (!dbUser || dbUser.status !== 'active') {
+          console.log(`[ColorTrading/${mode.id}] ❌ Socket DB FAIL: ${socket.user.userId.slice(-4)}`);
+          return next(new Error('User not found or inactive'));
+        }
+        console.log(`[ColorTrading/${mode.id}] ✅ DB validated:`, socket.user.username);
+
         next();
       } catch (err) {
         console.error(`[ColorTrading/${mode.id}] ❌ Auth failed:`, err.message);

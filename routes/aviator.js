@@ -9,28 +9,24 @@ const router = express.Router();
 
 router.get("/", auth, async (req, res) => {
     try {
-        const { userId } = req.user;
-
-        const user = await User.findById(userId).select("-password -refreshTokens");
-
-        if (!user) {
-            return res.status(404).json({
-                message: "User not found",
-            });
-        }
+        const { userId, username, role } = req.user;
+        const user = await User.findById(userId).select('walletBalance username role').lean();
 
         return res.json({
             success: true,
             data: {
-                _id: user._id,
-                username: user.username,
-                walletBalance: user.walletBalance || user.balance || 0,
-                role: user.role || "user"
+                _id: userId,
+                username: username || user?.username,
+                walletBalance: user?.walletBalance || 0,
+                role: role || user?.role || "user"
             }
         });
+
     } catch (err) {
+        console.error('[AVIATOR /] Error:', err.message, { userId: req.user?.userId });
         return res.status(500).json({
             message: "Server error",
+            code: 'AVIATOR_ROUTE_ERROR'
         });
     }
 });

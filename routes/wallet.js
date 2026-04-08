@@ -3,6 +3,7 @@ const auth = require("../middleware/auth");
 const DepositRequest = require("../models/DepositRequest");
 const WithdrawRequest = require("../models/WithdrawRequest");
 const PlatformFeeCollection = require("../models/PlatformFeeCollection");
+const Transaction = require("../models/Transaction");
 const WalletTransaction = require("../models/WalletTransaction");
 const cloudinaryUpload = require("../middleware/cloudinaryUpload.js");
 const adminAuth = require('../middleware/adminAuth');
@@ -428,6 +429,22 @@ router.patch("/admin/withdraw-requests/:id", adminAuth(), async (req, res) => {
     request.reviewedAt = new Date();
     request.reviewedBy = adminId;
     await request.save();
+
+    // Create Transaction record for analytics/profit calculation
+    await Transaction.create({
+      userId: request.userId,
+      type: "withdraw",
+      amount: request.amount,
+      status: "paid",
+      upiId: request.upiId,
+      description: `Withdraw payout to ${request.upiId}`,
+      metadata: {
+        withdrawRequestId: request._id.toString()
+      },
+      reviewedBy: adminId,
+      reviewedAt: new Date()
+    });
+
     return res.json({ message: "Withdraw request marked paid" });
   } catch (error) {
     return res.status(500).json({ error: error.message });

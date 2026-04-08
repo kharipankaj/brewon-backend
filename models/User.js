@@ -1,6 +1,13 @@
 const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
 
+
+// 🔥 Generate Referral Code
+function generateReferralCode(username) {
+  const random = Math.random().toString(36).substring(2, 6).toUpperCase();
+  return (username.slice(0, 4) + random).toUpperCase();
+}
+
 const userSchema = new mongoose.Schema({
   firstName: {
     type: String,
@@ -13,6 +20,8 @@ const userSchema = new mongoose.Schema({
     trim: true,
     maxlength: [50, 'Last name cannot exceed 50 characters']
   },
+  // 🔥 Referral
+
 
   username: {
     type: String,
@@ -75,6 +84,45 @@ const userSchema = new mongoose.Schema({
     type: Number,
     default: 0
   },
+
+  // Referral System Fields
+  referralCode: {
+    type: String,
+    unique: true,
+    uppercase: true,
+    trim: true
+  },
+  referredBy: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    index: true
+  },
+  referralEarnings: {
+    type: Number,
+    default: 0,
+    min: 0
+  },
+  referrals: [{
+    userId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      required: true
+    },
+    status: {
+      type: String,
+      enum: ['pending', 'joined', 'bonus_paid'],
+      default: 'pending'
+    },
+    bonusAmount: {
+      type: Number,
+      default: 100
+    },
+    joinedAt: {
+      type: Date,
+      default: Date.now
+    }
+  }],
+
   createdAt: {
     type: Date,
     default: Date.now
@@ -105,7 +153,34 @@ userSchema.methods.comparePassword = async function (candidatePassword) {
   return await bcrypt.compare(candidatePassword, this.password);
 };
 
+// 🔥 Password hashing & referral code generation (pre-save)
+userSchema.pre('save', async function(next) {
+  try {
+    // Hash password if modified
+    if (this.isModified('password')) {
+      this.password = await bcrypt.hash(this.password, 12);
+    }
+
+    // Generate referral code only for new users
+    if (this.isNew && !this.referralCode) {
+      let exists = true;
+      let code;
+      while (exists) {
+        code = generateReferralCode(this.username);
+        const user = await mongoose.models.User.findOne({ referralCode: code });
+        if (!user) exists = false;
+      }
+      this.referralCode = code;
+    }
+    if (typeof next === 'function') next();
+  } catch (err) {
+    if (typeof next === 'function') next(err);
+  }
+});
+
 // Indexes
 userSchema.index({ balance: 1 });
 userSchema.index({ 'refreshTokens.tokenHash': 1 }, { sparse: true });
+userSchema.index({ 'referrals.userId': 1 });
+
 module.exports = mongoose.model('User', userSchema);
