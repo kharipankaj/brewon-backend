@@ -21,7 +21,7 @@ const jwt = require('jsonwebtoken');
 const { setAdminNamespace } = require('./services/adminSocketService');
 const { getDashboardStats } = require('./services/adminAnalyticsService');
 
-const { initColorTrading } = require("./colorServer");
+const { initColorTrading } = require("./ColorServer");
 
 const connectDB = require('./db');
 
