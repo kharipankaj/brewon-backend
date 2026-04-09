@@ -1,3 +1,13 @@
+// 🔥 GLOBAL ERROR HANDLERS
+process.on('uncaughtException', (err) => {
+  console.error('💥 UNCAUGHT EXCEPTION:', err);
+});
+
+process.on('unhandledRejection', (err) => {
+  console.error('💥 UNHANDLED PROMISE:', err);
+});
+
+console.log("🚀 SERVER FILE LOADED");
 require('dotenv').config();
 
 const express = require('express');
@@ -22,6 +32,22 @@ const { Bet: AviatorBet } = require('./models/Aviator-bet');
 
 const app = express();
 const server = http.createServer(app);
+
+const allowedOrigins = [
+  "http://localhost:3000",
+  "https://www.fuseconnects.in",
+  "https://fuseconnects.in"
+];
+
+app.use(cors({
+  origin: function (origin, callback) {
+    if (!origin) return callback(null, true);
+    if (allowedOrigins.includes(origin)) return callback(null, true);
+    return callback(new Error("CORS blocked"), false);
+  },
+  credentials: true,
+}));
+
 
 const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:3000';
 
@@ -259,8 +285,8 @@ adminIo.on('connection', (socket) => {
     .then((stats) => {
       socket.emit('updateStats', stats);
     })
-    .catch(() => {});
-  
+    .catch(() => { });
+
   socket.on('disconnect', () => {
     console.log(`[ADMIN] Admin disconnected: ${socket.user.username}`);
   });
@@ -300,20 +326,28 @@ app.use((err, req, res, next) => {
   res.status(500).json({ success: false, message: 'Server error' });
 });
 
-// ✅ START SERVER
 const startServer = async () => {
   try {
+    console.log("🔌 Connecting DB...");
     await connectDB();
+    console.log("✅ DB Connected");
+
+    console.log("🎯 Initializing Color Trading...");
     initColorTrading(io, mongoose);
+    console.log("✅ Color Trading Ready");
+
     startGame();
 
     const PORT = process.env.PORT || 5000;
-    server.listen(PORT);
+
+    server.listen(PORT, () => {
+      console.log(`🚀 Server running on port ${PORT}`);
+    });
 
   } catch (err) {
+    console.error("💀 SERVER START FAILED:", err);
     process.exit(1);
   }
-
 };
 
 startServer();
