@@ -34,7 +34,7 @@ const app = express();
 const server = http.createServer(app);
 
 const allowedOrigins = [
-  "http://localhost:3000",
+  process.env.FRONTEND_URL,
   "https://www.fuseconnects.in",
   "https://fuseconnects.in"
 ];
@@ -49,7 +49,7 @@ app.use(cors({
 }));
 
 
-const FRONTEND_URL = process.env.FRONTEND_URL ;
+const FRONTEND_URL = process.env.FRONTEND_URL;
 
 // ✅ SOCKET
 const io = new Server(server, {

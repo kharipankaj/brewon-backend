@@ -21,6 +21,7 @@ class GameEngine {
     this.currentRound = null;
     this.currentMultiplier = 1.0;
     this.startTime = null;
+    this.waitingEndsAt = null;
     this.tickInterval = null;
     this.crashPoint = null;
     this.activeBets = new Map();
@@ -38,12 +39,17 @@ class GameEngine {
   scheduleNextRound() {
     this.state = 'waiting';
     this.currentMultiplier = 1.0;
+    this.startTime = null;
     this.activeBets.clear();
     this.currentRound = null;
     this.crashPoint = null;
     this.nextRoundId = uuidv4();
+    this.waitingEndsAt = Date.now() + this.WAITING_DURATION;
 
-    this.io.emit('game:waiting', { countdownSeconds: this.WAITING_DURATION / 1000 });
+    this.io.emit('game:waiting', {
+      countdownSeconds: this.WAITING_DURATION / 1000,
+      waitingEndsAt: this.waitingEndsAt,
+    });
     setTimeout(() => this.startRound(), this.WAITING_DURATION);
   }
 
@@ -51,6 +57,7 @@ class GameEngine {
     this.crashPoint = generateCrashPoint();
     const roundId = this.nextRoundId || uuidv4();
     this.startTime = Date.now();
+    this.waitingEndsAt = null;
     this.state = 'flying';
 
     try {
@@ -286,11 +293,18 @@ class GameEngine {
   }
 
   getState() {
+    const countdownSeconds =
+      this.state === 'waiting' && this.waitingEndsAt
+        ? Math.max(0, Math.ceil((this.waitingEndsAt - Date.now()) / 1000))
+        : 0;
+
     return {
       state: this.state,
       multiplier: this.currentMultiplier,
-      roundId: this.currentRound?.roundId,
+      roundId: this.currentRound?.roundId || this.nextRoundId,
       recentCrashes: this.recentCrashes,
+      countdownSeconds,
+      waitingEndsAt: this.waitingEndsAt,
     };
   }
 }
