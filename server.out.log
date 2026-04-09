@@ -1,5 +1,0 @@
-[dotenv@17.3.1] injecting env (15) from .env -- tip: ⚙️  specify custom .env file path with { path: '/custom/path/.env' }
-[dotenv@17.3.1] injecting env (0) from .env -- tip: ⚙️  suppress all logs with { quiet: true }
-[dotenv@17.3.1] injecting env (0) from .env -- tip: ⚙️  enable debug logging with { debug: true }
-✅ Cloudinary configured successfully
-[ColorTrading] Initialized wingo + fastparity with anti-repeat logic
