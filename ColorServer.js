@@ -92,6 +92,8 @@ function initColorTrading(io, mongoose) {
         roundId: state.roundId,
         status: state.status,
         timeLeft: getTimeLeft(state, mode),
+        bettingClosesAt: getBettingClosesAt(state, mode),
+        endsAt: state.endTime,
         recentResults: state.recentResults.slice(-20),
         liveBets: sanitizeBets(state.bets),
       });
@@ -175,11 +177,17 @@ function startGameLoop(ns, mode, ColorBet, ColorRound, User) {
       mode: mode.id,
       duration: mode.duration,
       bettingCloses: mode.bettingWindow,
+      bettingClosesAt: getBettingClosesAt(state, mode),
+      endsAt: state.endTime,
     });
 
     await sleep(mode.bettingWindow * 1000);
     state.status = "closed";
-    ns.emit("round:closed", { roundId: state.roundId });
+    ns.emit("round:closed", {
+      roundId: state.roundId,
+      bettingClosesAt: getBettingClosesAt(state, mode),
+      endsAt: state.endTime,
+    });
 
     await sleep((mode.duration - mode.bettingWindow) * 1000);
 
@@ -327,6 +335,11 @@ function sleep(ms) {
 function getTimeLeft(state, mode) {
   if (!state.endTime) return mode.duration;
   return Math.max(0, Math.ceil((state.endTime - Date.now()) / 1000));
+}
+
+function getBettingClosesAt(state, mode) {
+  if (!state.startTime) return null;
+  return state.startTime + mode.bettingWindow * 1000;
 }
 
 function sanitizeBets(bets) {
