@@ -2,7 +2,7 @@ const express = require("express");
 const jwt = require("jsonwebtoken");
 const User = require("../models/User");
 const { hashToken } = require("../utils/crypto");
-const { getWalletSummary } = require("../services/walletService");
+const { getPublicUserPayload } = require("../services/publicUserService");
 
 const router = express.Router();
 const isProd = process.env.NODE_ENV === "production";
@@ -131,9 +131,6 @@ router.post("/", async (req, res) => {
       return res.status(400).json({ message: "Incorrect credentials" });
     }
 
-    const walletSummary = await getWalletSummary(user._id).catch(() => null);
-    const resolvedBalance = walletSummary?.total_balance ?? user.balance ?? 0;
-
     const accessToken = generateAccessToken(user);
     const refreshToken = generateRefreshToken(user._id);
 
@@ -184,6 +181,8 @@ maxAge: 7 * 24 * 60 * 60 * 1000
     
     console.log('✅ Cookies set successfully');
 
+    const publicUser = await getPublicUserPayload(user);
+
     // Single JSON response for sessionStorage
     res.json({
       success: true,
@@ -191,11 +190,7 @@ maxAge: 7 * 24 * 60 * 60 * 1000
       accessToken,  // Frontend sessionStorage
       sessionToken: accessToken,
       user: {
-        _id: user._id,
-        username: user.username,
-        balance: resolvedBalance,
-        walletBalance: resolvedBalance,
-        role: user.role,
+        ...publicUser,
         email: user.email || '',
         firstName: user.firstName || '',
         lastName: user.lastName || ''

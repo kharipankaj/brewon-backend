@@ -7,6 +7,11 @@ const crypto = require("crypto");
 const jwt = require("jsonwebtoken");
 const { GAME_MODES, determineRoundResult, NUMBER_TO_COLOR, NUMBER_TO_SIDE } = require("./colorGameEngine");
 const { saveColorRevenue, updateRevenueSummary } = require('./utils/revenueTracker');
+const {
+  creditWalletBalance,
+  debitWalletBalance,
+  snapshotWallet,
+} = require("./services/walletService");
 
 // ─── In-memory state per game mode ───────────────────────────
 const gameState = {};
@@ -112,10 +117,7 @@ function initColorTrading(io, mongoose) {
           if (typeof amount !== "number" || amount < 10 || amount > 50000) return ack?.({ error: "Invalid amount" });
 
           const user = await User.findById(userId);
-          if (!user || user.balance < amount) return ack?.({ error: "Insufficient balance" });
-
-          user.balance -= amount;
-          await user.save();
+          if (!user) return ack?.({ error: "Unauthorized" });
 
           const bet = await ColorBet.create({
             userId,
@@ -127,6 +129,32 @@ function initColorTrading(io, mongoose) {
             amount,
             status: "pending",
           });
+
+          let debitResult;
+          try {
+            debitResult = await debitWalletBalance({
+              userId,
+              amount,
+              type: "game_entry",
+              referenceId: `color:${mode.id}:${state.roundId}:bet:${bet._id}`,
+              description: `Color trading entry (${mode.id})`,
+              metadata: {
+                gameKey: "color_trading",
+                mode: mode.id,
+                roundId: state.roundId,
+                betId: String(bet._id),
+                betType: type,
+                betValue: String(value),
+              },
+              preferredBuckets: ["bonus_balance", "deposit_balance", "winning_balance"],
+            });
+          } catch (walletError) {
+            await ColorBet.findByIdAndDelete(bet._id).catch(() => null);
+            if (walletError?.message === "INSUFFICIENT_BALANCE") {
+              return ack?.({ error: "Insufficient balance" });
+            }
+            throw walletError;
+          }
 
           await User.findByIdAndUpdate(userId, { $inc: { totalBets: 1, gamesPlayed: 1 } });
 
@@ -141,7 +169,11 @@ function initColorTrading(io, mongoose) {
           });
 
           ns.emit("bet:new", { username: user.username, type, value: String(value), amount });
-          ack?.({ success: true, betId: bet._id, newBalance: user.balance });
+          ack?.({
+            success: true,
+            betId: bet._id,
+            newBalance: snapshotWallet(debitResult.wallet).totalBalance,
+          });
         } catch (err) {
           console.error("[ColorTrading] bet error:", err);
           ack?.({ error: "Server error" });
@@ -242,8 +274,25 @@ function startGameLoop(ns, mode, ColorBet, ColorRound, User) {
     for (const payout of result.payouts) {
       if (payout.totalPayout > 0) {
         try {
+          await creditWalletBalance({
+            userId: payout.user,
+            amount: payout.totalPayout,
+            type: "game_win",
+            bucket: "winning_balance",
+            referenceId: `color:${mode.id}:${state.roundId}:payout:${payout.user}`,
+            description: `Color trading payout (${mode.id})`,
+            metadata: {
+              gameKey: "color_trading",
+              mode: mode.id,
+              roundId: state.roundId,
+              payout: payout.totalPayout,
+              winningNumber: result.winningNumber,
+              winningColor: result.winningColor,
+              winningSide: result.winningSide,
+            },
+          });
           await User.findByIdAndUpdate(payout.user, {
-            $inc: { balance: payout.totalPayout, totalWins: 1 },
+            $inc: { totalWins: 1 },
           });
         } catch (e) {
           console.error("[ColorTrading] payout error:", e);

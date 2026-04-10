@@ -4,6 +4,7 @@ const Transaction = require("../models/Transaction");
 const { Bet: AviatorBet } = require("../models/Aviator-bet");
 const auth = require("../middleware/auth");
 const { getWalletSummary } = require("../services/walletService");
+const { getPublicUserPayload } = require("../services/publicUserService");
 
 const router = express.Router();
 
@@ -25,18 +26,14 @@ router.get("/", auth, async (req, res) => {
       });
     }
 
-    const resolvedBalance = walletSummary?.total_balance ?? user.balance ?? 0;
+    const publicUser = await getPublicUserPayload(user, { walletSummary });
 
-    console.log("✅ Profile:", user.username, "balance:", resolvedBalance);
+    console.log("✅ Profile:", user.username, "balance:", publicUser.balance);
 
     return res.json({
       success: true,
       data: {
-        _id: user._id,
-        username: user.username,
-        walletBalance: resolvedBalance,
-        balance: resolvedBalance,
-        role: user.role || "user",
+        ...publicUser,
       }
     });
 

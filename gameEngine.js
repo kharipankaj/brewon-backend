@@ -2,6 +2,7 @@ const { v4: uuidv4 } = require('uuid');
 const { saveAviatorRevenue, updateRevenueSummary } = require('./utils/revenueTracker');
 const { deductGameEntry, payoutGameWinner } = require('./services/gameWalletService');
 const { generateProvablyFairCrashPoint } = require('./utils/aviatorEngine');
+const { snapshotWallet } = require('./services/walletService');
 
 class GameEngine {
   constructor(io, playerModel, roundModel, betModel) {
@@ -218,30 +219,34 @@ setTimeout(() => {
     }
 
     try {
+      const userId = socket.user?.userId || playerId;
+      const safeUsername = socket.user?.username || username;
       const walletResult = await deductGameEntry({
-        userId: playerId,
+        userId,
         amount: betAmount,
         gameKey: 'aviator',
         matchId: this.currentRound?.roundId || this.nextRoundId || 'upcoming',
       });
+      const walletSnapshot = snapshotWallet(walletResult.wallet);
 
       this.activeBets.set(socket.id, {
-        playerId,
-        username,
+        playerId: userId,
+        username: safeUsername,
         betAmount,
         cashedOut: false,
         autoCashout: autoCashout || null,
       });
 
-      this.io.emit('bet:placed', { username, betAmount });
+      this.io.emit('bet:placed', { username: safeUsername, betAmount });
 
       return {
         success: true,
-        balance: walletResult.wallet.totalBalance,
+        balance: walletSnapshot.totalBalance,
         wallet: {
-          depositBalance: walletResult.wallet.depositBalance,
-          winningBalance: walletResult.wallet.winningBalance,
-          bonusBalance: walletResult.wallet.bonusBalance,
+          depositBalance: walletSnapshot.depositBalance,
+          winningBalance: walletSnapshot.winningBalance,
+          bonusBalance: walletSnapshot.bonusBalance,
+          totalBalance: walletSnapshot.totalBalance,
         },
       };
     } catch (err) {
@@ -273,15 +278,17 @@ setTimeout(() => {
     bet.cashedOutAt = multiplier;
 
     try {
+      const userId = socket.user?.userId || playerId;
       const walletResult = await payoutGameWinner({
-        userId: playerId,
+        userId,
         amount: winAmount,
         gameKey: 'aviator',
         matchId: this.currentRound?.roundId || 'unknown',
       });
+      const walletSnapshot = snapshotWallet(walletResult.wallet);
 
       await this.Bet.create({
-        playerId,
+        playerId: userId,
         username: bet.username,
         roundId: this.currentRound?.roundId,
         betAmount: bet.betAmount,
@@ -301,11 +308,12 @@ setTimeout(() => {
         multiplier,
         winAmount,
         profit,
-        balance: walletResult.wallet.totalBalance,
+        balance: walletSnapshot.totalBalance,
         wallet: {
-          depositBalance: walletResult.wallet.depositBalance,
-          winningBalance: walletResult.wallet.winningBalance,
-          bonusBalance: walletResult.wallet.bonusBalance,
+          depositBalance: walletSnapshot.depositBalance,
+          winningBalance: walletSnapshot.winningBalance,
+          bonusBalance: walletSnapshot.bonusBalance,
+          totalBalance: walletSnapshot.totalBalance,
         },
       };
     } catch (err) {

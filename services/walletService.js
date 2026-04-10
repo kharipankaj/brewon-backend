@@ -456,6 +456,29 @@ async function debitGameEntry(userId, amount, referenceId, metadata = {}) {
   });
 }
 
+async function setWalletTotalBalance(userId, amount, session = null) {
+  const normalizedAmount = roundAmount(amount);
+  if (normalizedAmount < 0) {
+    throw new Error('INVALID_AMOUNT');
+  }
+
+  const wallet = await ensureWallet(userId, session);
+  const before = snapshotWallet(wallet);
+
+  wallet.depositBalance = normalizedAmount;
+  wallet.winningBalance = 0;
+  wallet.bonusBalance = 0;
+
+  await wallet.save({ session });
+  await syncUserLegacyBalance(userId, wallet, session);
+
+  return {
+    wallet,
+    before,
+    after: snapshotWallet(wallet),
+  };
+}
+
 module.exports = {
   ensureWallet,
   snapshotWallet,
@@ -466,5 +489,6 @@ module.exports = {
   getWalletSummary,
   syncWalletUsername,
   debitGameEntry,
+  setWalletTotalBalance,
   roundAmount,
 };

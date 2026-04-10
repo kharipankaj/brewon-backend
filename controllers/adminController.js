@@ -9,6 +9,7 @@ const WalletTransaction = require('../models/WalletTransaction');
 const { logAdminActivity } = require('../services/adminActivityService');
 const { emitAdminEvent } = require('../services/adminSocketService');
 const { buildFraudSignals } = require('../services/fraudDetectionService');
+const { creditWalletBalance, setWalletTotalBalance } = require('../services/walletService');
 const {
   getAdminSummaryPayload,
   getRevenueSeries,
@@ -469,6 +470,12 @@ const adminController = {
         updates.balance = Number(updates.balance || 0);
       }
 
+      let requestedBalance = null;
+      if (Object.prototype.hasOwnProperty.call(updates, 'balance')) {
+        requestedBalance = updates.balance;
+        delete updates.balance;
+      }
+
       const user = await User.findByIdAndUpdate(id, updates, {
         new: true,
         runValidators: true,
@@ -476,6 +483,11 @@ const adminController = {
 
       if (!user) {
         return res.status(404).json({ success: false, message: 'User not found' });
+      }
+
+      if (requestedBalance !== null) {
+        await setWalletTotalBalance(user._id, requestedBalance);
+        user.balance = requestedBalance;
       }
 
       await logAdminActivity({
@@ -770,9 +782,21 @@ const adminController = {
         return res.status(404).json({ success: false, message: 'User not found' });
       }
 
-      // Update user balance
-      user.balance = Number(user.balance || 0) + approvedAmount;
-      await user.save();
+      await creditWalletBalance({
+        userId: user._id,
+        amount: approvedAmount,
+        type: 'deposit',
+        bucket: 'deposit_balance',
+        referenceId: `admin:deposit:${depositRequest._id}`,
+        description: `Deposit approved | UTR: ${depositRequest.utrNo} | Requested: ${depositRequest.amount}`,
+        adminUserId: req.user.userId,
+        requestedAmount: depositRequest.amount,
+        upiId: depositRequest.upiId || null,
+        utrNo: depositRequest.utrNo,
+        screenshotUrl: depositRequest.screenshotUrl,
+      });
+
+      const refreshedUser = await User.findById(depositRequest.userId);
 
       // Update the deposit request status to approved
       depositRequest.status = 'approved';
@@ -841,12 +865,12 @@ const adminController = {
         status: 'approved',
         userId: {
           _id: user._id,
-          username: user.username,
-          firstName: user.firstName,
-          lastName: user.lastName,
-          email: user.email,
-          mobile: user.mobile,
-          balance: user.balance,
+          username: refreshedUser.username,
+          firstName: refreshedUser.firstName,
+          lastName: refreshedUser.lastName,
+          email: refreshedUser.email,
+          mobile: refreshedUser.mobile,
+          balance: refreshedUser.balance,
         },
         reviewedBy: req.user.userId,
         reviewedAt: new Date(),
@@ -877,7 +901,7 @@ const adminController = {
       });
       emitAdminEvent('userUpdate', {
         action: 'balance-updated',
-        userId: user._id,
+        userId: refreshedUser._id,
       });
       await emitAdminRefreshPayload();
 

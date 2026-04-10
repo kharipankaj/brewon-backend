@@ -4,6 +4,7 @@ const User = require('../models/User');
 const { hashToken } = require('../utils/crypto');
 const { generateUniqueReferralCode } = require('../utils/referralUtils');
 const jwt = require('jsonwebtoken');
+const { getPublicUserPayload } = require('../services/publicUserService');
 
 const isProd = process.env.NODE_ENV === 'production';
 
@@ -390,19 +391,19 @@ exports.getProfile = async (req, res) => {
       return res.status(404).json({ success: false, message: 'User not found' });
     }
 
+    const publicUser = await getPublicUserPayload(user);
+
     res.json({
       success: true,
       data: {
+        ...publicUser,
         id: user._id,
         firstName: user.firstName,
         lastName: user.lastName || '',
         name: `${user.firstName} ${user.lastName || ''}`.trim(),
-        username: user.username,
         email: user.email,
         mobile: user.mobile,
-        role: user.role,
         isVerified: user.isVerified,
-        balance: user.balance || 0,
         referralCode: user.referralCode,
         stats: {
           totalGames: user.gamesPlayed || 0,
@@ -418,5 +419,4 @@ exports.getProfile = async (req, res) => {
     res.status(500).json({ success: false, message: 'Server error' });
   }
 };
-
 
