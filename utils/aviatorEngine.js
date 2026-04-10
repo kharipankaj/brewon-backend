@@ -1,194 +1,232 @@
-/**
- * AVIATOR GAME ENGINE - EXACT SPEC w/ FIXES
- * - Null cashoutAt = LOSE
- * - Safety step 0.01 precision
- * - Skip null in expectedPayout
- * - NaN profit handled
- */
+const crypto = require('crypto');
 
-const TEST_BETS_1 = [
-  {user: "A", amount: 5000, cashoutAt: 1.5},
-  {user: "B", amount: 3000, cashoutAt: 2.0},
-  {user: "C", amount: 2000, cashoutAt: 3.0}
+const DEFAULT_INSTANT_CRASH_PROBABILITY = 0.03;
+const DEFAULT_HOUSE_EDGE = 0.04;
+const DEFAULT_MAX_MULTIPLIER = 200;
+
+const DEMO_DISTRIBUTION = [
+  { label: 'common-low', min: 1.2, max: 1.7, weight: 0.7 },
+  { label: 'mid', min: 1.7, max: 3.5, weight: 0.2 },
+  { label: 'high', min: 3.5, max: 7.0, weight: 0.0667 },
+  { label: 'rare-peak', min: 7.0, max: 10.0, weight: 0.0333 },
 ];
 
-const TEST_BETS_2 = [
-  {user: "A", amount: 100, cashoutAt: 1.3},
-  {user: "B", amount: 100, cashoutAt: 1.8},
-  {user: "C", amount: 100, cashoutAt: 2.5}
-];
+function roundToTwo(value) {
+  return Math.round(Number(value || 0) * 100) / 100;
+}
 
-const FIXED_BETS_SIM = [
-  {user: "A", amount: 2000, cashoutAt: 1.5},
-  {user: "B", amount: 1000, cashoutAt: 2.5},
-  {user: "C", amount: 1500, cashoutAt: 1.8},
-  {user: "D", amount: 500, cashoutAt: 4.0}
-];
+function normalizeBets(bets = []) {
+  return bets
+    .filter((bet) => bet && Number(bet.amount) > 0)
+    .map((bet) => ({
+      ...bet,
+      amount: roundToTwo(bet.amount),
+      cashoutAt: bet.cashoutAt == null ? null : Number(bet.cashoutAt),
+    }));
+}
 
-function getCrashPoint(bets = []) {
-  const totalBets = bets.reduce((sum, b) => sum + b.amount, 0);
+function randomFloat(min, max) {
+  const value = crypto.randomInt(0, 1_000_000) / 1_000_000;
+  return min + (max - min) * value;
+}
 
-  const rand = Math.random() * 100;
-  let rangeMin, rangeMax, frequency;
-  if (rand < 60) {
-    rangeMin = 1.00; rangeMax = 2.00; frequency = "60% common";
-  } else if (rand < 80) {
-    rangeMin = 2.00; rangeMax = 3.00; frequency = "20%";
-  } else if (rand < 92) {
-    rangeMin = 3.00; rangeMax = 5.00; frequency = "12%";
-  } else {
-    rangeMin = 5.00; rangeMax = 10.00; frequency = "8% rare";
+function pickWeightedBand(distribution) {
+  const totalWeight = distribution.reduce((sum, band) => sum + band.weight, 0);
+  const roll = randomFloat(0, totalWeight);
+  let cursor = 0;
+
+  for (const band of distribution) {
+    cursor += band.weight;
+    if (roll <= cursor) {
+      return band;
+    }
   }
 
-  const LOW_BETS = 100, HIGH_BETS = 10000;
-  let position = totalBets <= LOW_BETS ? 0 : totalBets >= HIGH_BETS ? 1 : (totalBets - LOW_BETS) / (HIGH_BETS - LOW_BETS);
-  position = Math.max(0, Math.min(1, position));
+  return distribution[distribution.length - 1];
+}
 
-  let crashPoint = parseFloat((rangeMax - (position * (rangeMax - rangeMin))).toFixed(2));
-  crashPoint = Math.max(1.00, Math.min(10.00, crashPoint));
+function generateHash(serverSeed, clientSeed, nonce) {
+  return crypto
+    .createHmac('sha256', String(serverSeed))
+    .update(`${clientSeed}:${nonce}`)
+    .digest('hex');
+}
 
-  const initialCrash = crashPoint;
-  crashPoint = safetyCheck(crashPoint, bets, totalBets);
+function generateProvablyFairCrashPoint({
+  serverSeed,
+  clientSeed = 'public',
+  nonce = 0,
+  houseEdge = DEFAULT_HOUSE_EDGE,
+  instantCrashProbability = DEFAULT_INSTANT_CRASH_PROBABILITY,
+  maxMultiplier = DEFAULT_MAX_MULTIPLIER,
+} = {}) {
+  const resolvedServerSeed =
+    serverSeed || crypto.randomBytes(32).toString('hex');
+  const hash = generateHash(resolvedServerSeed, clientSeed, nonce);
+  const int = parseInt(hash.slice(0, 13), 16);
+  const normalized = int / 0x1fffffffffffff;
 
-  const safetyTriggered = Math.abs(initialCrash - crashPoint) > 0.01;
+  let crashPoint;
+  if (normalized < instantCrashProbability) {
+    crashPoint = 1.0;
+  } else {
+    const adjusted = (1 - houseEdge) / (1 - normalized);
+    crashPoint = Math.max(1.0, Math.min(maxMultiplier, adjusted));
+  }
 
   return {
-    raw: crashPoint,
-    distribution: { randomValue: Math.floor(rand), selectedRange: `${rangeMin}x-${rangeMax}x`, frequency },
-    totalBets,
-    safetyTriggered
+    crashPoint: roundToTwo(crashPoint),
+    fairness: {
+      mode: 'provably-fair',
+      serverSeed: resolvedServerSeed,
+      clientSeed,
+      nonce,
+      hash,
+      houseEdge,
+      instantCrashProbability,
+    },
   };
 }
 
-function safetyCheck(crashPoint, bets, totalBets) {
-  const maxAllowedPayout = totalBets * 0.90;
-  let safePoint = parseFloat(crashPoint.toFixed(2));
+function generateDemoCrashPoint({
+  distribution = DEMO_DISTRIBUTION,
+  maxMultiplier = 10,
+} = {}) {
+  const selectedBand = pickWeightedBand(distribution);
+  const crashPoint = roundToTwo(
+    Math.min(maxMultiplier, randomFloat(selectedBand.min, selectedBand.max))
+  );
 
-  while (safePoint > 1.00) {
-    const expected = calculateExpectedPayout(safePoint, bets);
-    if (expected <= maxAllowedPayout) break;
-    safePoint -= 0.01;
-  }
-  return Math.max(1.00, parseFloat(safePoint.toFixed(2)));
+  return {
+    crashPoint,
+    fairness: {
+      mode: 'demo-weighted',
+      selectedBand: selectedBand.label,
+      selectedRange: `${selectedBand.min}x-${selectedBand.max}x`,
+      note: 'For disclosed simulation/demo use only.',
+      configuredDistribution: distribution.map((band) => ({
+        label: band.label,
+        range: `${band.min}x-${band.max}x`,
+        weight: band.weight,
+      })),
+    },
+  };
 }
 
 function calculateExpectedPayout(crashPoint, bets) {
-  return bets.reduce((total, bet) => {
+  return normalizeBets(bets).reduce((total, bet) => {
     if (bet.cashoutAt != null && bet.cashoutAt <= crashPoint) {
-      return total + parseFloat((bet.amount * bet.cashoutAt).toFixed(2));
+      return total + roundToTwo(bet.amount * bet.cashoutAt);
     }
     return total;
   }, 0);
 }
 
-function processRound(bets, round = 1) {
-  const crashData = getCrashPoint(bets);
-  const crashPoint = crashData.raw;
-  const totalBetsAmount = crashData.totalBets;
+function processRound(
+  bets = [],
+  round = 1,
+  options = {}
+) {
+  const normalizedBets = normalizeBets(bets);
+  const totalBetsAmount = normalizedBets.reduce((sum, bet) => sum + bet.amount, 0);
+  const mode = options.mode === 'demo' ? 'demo' : 'fair';
 
-  const results = bets.map(bet => {
+  const crashData =
+    mode === 'demo'
+      ? generateDemoCrashPoint(options.demoConfig)
+      : generateProvablyFairCrashPoint({
+          serverSeed: options.serverSeed,
+          clientSeed: options.clientSeed,
+          nonce: options.nonce ?? round,
+          houseEdge: options.houseEdge,
+          instantCrashProbability: options.instantCrashProbability,
+          maxMultiplier: options.maxMultiplier,
+        });
+
+  const crashPoint = crashData.crashPoint;
+
+  const results = normalizedBets.map((bet) => {
     const isWin = bet.cashoutAt != null && bet.cashoutAt <= crashPoint;
-    const status = isWin ? 'WIN' : 'LOSE';
-    const payout = isWin ? parseFloat((bet.amount * bet.cashoutAt).toFixed(2)) : 0;
-    const profit = parseFloat((payout - bet.amount).toFixed(2));
+    const payout = isWin ? roundToTwo(bet.amount * bet.cashoutAt) : 0;
+    const profit = isWin ? roundToTwo(payout - bet.amount) : roundToTwo(-bet.amount);
 
     return {
       user: bet.user,
-      invested: parseFloat(bet.amount.toFixed(2)),
+      invested: bet.amount,
       cashoutAt: bet.cashoutAt,
-      status,
+      status: isWin ? 'WIN' : 'LOSE',
       payout,
-      profit
+      profit,
     };
   });
 
-  const totalPayout = results.reduce((sum, r) => sum + r.payout, 0);
-  const platformProfit = totalBetsAmount - totalPayout;
-  const platformPercent = totalBetsAmount === 0 ? '0%' : parseFloat(((platformProfit / totalBetsAmount) * 100).toFixed(2)) + '%';
+  const totalPayout = roundToTwo(results.reduce((sum, result) => sum + result.payout, 0));
+  const platformProfit = roundToTwo(totalBetsAmount - totalPayout);
+  const platformPercent =
+    totalBetsAmount === 0
+      ? '0%'
+      : `${roundToTwo((platformProfit / totalBetsAmount) * 100)}%`;
 
   return {
     round,
-    totalBets: parseFloat(totalBetsAmount.toFixed(2)),
+    mode,
+    totalBets: roundToTwo(totalBetsAmount),
     crashPoint,
-    safetyCheckTriggered: crashData.safetyTriggered,
-    distribution: crashData.distribution,
+    fairness: crashData.fairness,
     results,
     summary: {
-      totalBets: parseFloat(totalBetsAmount.toFixed(2)),
-      totalPayout: parseFloat(totalPayout.toFixed(2)),
-      platformProfit: parseFloat(platformProfit.toFixed(2)),
+      totalBets: roundToTwo(totalBetsAmount),
+      totalPayout,
+      platformProfit,
       platformPercent,
-      safetyTriggered: crashData.safetyTriggered
-    }
+    },
   };
 }
 
-function simulateRounds(bets, numRounds = 10) {
+function simulateRounds(bets = [], numRounds = 10, options = {}) {
   const rounds = [];
   let totalPlatformProfit = 0;
+  let rarePeakCount = 0;
 
-  for (let i = 1; i <= numRounds; i++) {
-    const roundResult = processRound([...bets], i);  // copy to avoid mut
+  for (let i = 1; i <= numRounds; i += 1) {
+    const roundResult = processRound(bets, i, {
+      ...options,
+      nonce: options.nonce == null ? i : options.nonce + i - 1,
+    });
+
     rounds.push(roundResult);
     totalPlatformProfit += roundResult.summary.platformProfit;
 
-    console.log(`\\nRound ${i}:`);
-    console.log(JSON.stringify(roundResult, null, 2));
+    if (roundResult.crashPoint >= 7 && roundResult.crashPoint <= 10) {
+      rarePeakCount += 1;
+    }
   }
 
-  const lowCrashes = rounds.filter(r => r.crashPoint <= 2.00).length;
-  console.log(`\\n📊 Sim Summary (${numRounds} rounds): - 1x-2x: ${lowCrashes}/${numRounds} (${((lowCrashes/numRounds)*100).toFixed(0)}%) - Total profit: ₹${parseFloat(totalPlatformProfit.toFixed(2))}`);
-
-  return { rounds, stats: { lowCrashesPercentage: (lowCrashes/numRounds)*100, totalPlatformProfit } };
+  return {
+    rounds,
+    stats: {
+      totalRounds: numRounds,
+      totalPlatformProfit: roundToTwo(totalPlatformProfit),
+      lowBandPercentage:
+        numRounds === 0
+          ? 0
+          : roundToTwo(
+              (rounds.filter((round) => round.crashPoint >= 1.2 && round.crashPoint <= 1.7).length /
+                numRounds) *
+                100
+            ),
+      rarePeakCount,
+      rarePeakFrequency:
+        rarePeakCount === 0 ? null : `1 in ${roundToTwo(numRounds / rarePeakCount)}`,
+    },
+  };
 }
 
-function verifyPlatformSafety(roundResults) {
-  let allSafe = true;
-  const issues = [];
-
-  roundResults.forEach(r => {
-    const profitPct = r.summary.platformProfit / r.summary.totalBets;
-    if (isNaN(profitPct)) return;
-    if (profitPct < 0.10) {
-      issues.push(`Round ${r.round}: ${profitPct.toFixed(4)} < 0.10`);
-      allSafe = false;
-    }
-  });
-
-  console.log(allSafe ? '✅ VERIFIED: Platform always profits >=10%!' : `❌ Issues: ${issues.length}`);
-  issues.forEach(i => console.log(' ' + i));
-
-  return { safe: allSafe, issues };
-}
-
-function runTests() {
-  console.log('🛩️ AVIATOR TESTS FIXED\\n');
-
-  const r1 = processRound(TEST_BETS_1, 1);
-  console.log('Test 1 High ₹10k:'); console.log(JSON.stringify(r1, null, 2));
-
-  const r2 = processRound(TEST_BETS_2, 2);
-  console.log('\\nTest 2 Low ₹300:'); console.log(JSON.stringify(r2, null, 2));
-
-  const r3 = processRound(FIXED_BETS_SIM, 3);
-  console.log('\\nTest 3 Medium ₹5k:'); console.log(JSON.stringify(r3, null, 2));
-
-  const r4 = processRound([{user:"A", amount:200, cashoutAt:3.0},{user:"B", amount:300, cashoutAt:6.0},{user:"C", amount:500, cashoutAt:2.0}], 4);
-  console.log('\\nTest 4 Rare:'); console.log(JSON.stringify(r4, null, 2));
-
-  console.log('\\nTest 5 10-round sim:');
-  const sim = simulateRounds(FIXED_BETS_SIM, 10);
-
-  console.log('\\nSafety:');
-  verifyPlatformSafety([r1,r2,r3,r4,...sim.rounds]);
-
-  // Edge
-  console.log('\\nEdge: No bets'); console.log(processRound([]));
-  console.log('All early'); console.log(processRound([{user:'X', amount:100, cashoutAt:1.01}]));
-  console.log('No cashout'); console.log(processRound([{user:'X', amount:100, cashoutAt:null}]));
-}
-
-if (require.main === module) runTests();
-
-module.exports = { getCrashPoint, processRound, simulateRounds, verifyPlatformSafety, runTests };
-
+module.exports = {
+  DEMO_DISTRIBUTION,
+  generateProvablyFairCrashPoint,
+  generateDemoCrashPoint,
+  calculateExpectedPayout,
+  processRound,
+  simulateRounds,
+};

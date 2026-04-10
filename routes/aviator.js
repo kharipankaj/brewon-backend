@@ -2,6 +2,8 @@ const express = require("express");
 const User = require("../models/User");
 const { Bet: AviatorBet } = require("../models/Aviator-bet");
 const auth = require("../middleware/auth");
+const { getWalletSummary } = require("../services/walletService");
+const aviatorEngine = require("../utils/aviatorEngine");
 
 
 const router = express.Router();
@@ -10,14 +12,20 @@ const router = express.Router();
 router.get("/", auth, async (req, res) => {
     try {
         const { userId, username, role } = req.user;
-        const user = await User.findById(userId).select('walletBalance username role').lean();
+        const [user, walletSummary] = await Promise.all([
+            User.findById(userId).select('balance username role').lean(),
+            getWalletSummary(userId).catch(() => null),
+        ]);
+
+        const resolvedBalance = walletSummary?.total_balance ?? user?.balance ?? 0;
 
         return res.json({
             success: true,
             data: {
                 _id: userId,
                 username: username || user?.username,
-                walletBalance: user?.walletBalance || 0,
+                walletBalance: resolvedBalance,
+                balance: resolvedBalance,
                 role: role || user?.role || "user"
             }
         });
@@ -66,15 +74,20 @@ console.log(`✅ mybets: Found ${bets.length} bets for ${userId.slice(-4)}`);
  */
 router.post('/simulate', async (req, res) => {
   try {
-    const { bets, round, numRounds } = req.body;
+    const { bets, round, numRounds, mode, serverSeed, clientSeed, nonce } = req.body;
+    const simulationOptions = {
+      mode: mode === 'demo' ? 'demo' : 'fair',
+      serverSeed,
+      clientSeed,
+      nonce,
+    };
     
     if (numRounds) {
-      const sim = aviatorEngine.simulateRounds(bets || [], numRounds);
-      aviatorEngine.verifyPlatformSafety(sim.rounds);
+      const sim = aviatorEngine.simulateRounds(bets || [], numRounds, simulationOptions);
       return res.json({ success: true, simulation: sim });
     }
     
-    const result = aviatorEngine.processRound(bets || [], round || 1);
+    const result = aviatorEngine.processRound(bets || [], round || 1, simulationOptions);
     return res.json({ success: true, ...result });
   } catch (err) {
     return res.status(500).json({ success: false, message: err.message });

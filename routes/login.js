@@ -2,6 +2,7 @@ const express = require("express");
 const jwt = require("jsonwebtoken");
 const User = require("../models/User");
 const { hashToken } = require("../utils/crypto");
+const { getWalletSummary } = require("../services/walletService");
 
 const router = express.Router();
 const isProd = process.env.NODE_ENV === "production";
@@ -130,6 +131,9 @@ router.post("/", async (req, res) => {
       return res.status(400).json({ message: "Incorrect credentials" });
     }
 
+    const walletSummary = await getWalletSummary(user._id).catch(() => null);
+    const resolvedBalance = walletSummary?.total_balance ?? user.balance ?? 0;
+
     const accessToken = generateAccessToken(user);
     const refreshToken = generateRefreshToken(user._id);
 
@@ -189,6 +193,8 @@ maxAge: 7 * 24 * 60 * 60 * 1000
       user: {
         _id: user._id,
         username: user.username,
+        balance: resolvedBalance,
+        walletBalance: resolvedBalance,
         role: user.role,
         email: user.email || '',
         firstName: user.firstName || '',

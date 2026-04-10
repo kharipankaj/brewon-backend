@@ -3,6 +3,7 @@ const User = require("../models/User");
 const Transaction = require("../models/Transaction");
 const { Bet: AviatorBet } = require("../models/Aviator-bet");
 const auth = require("../middleware/auth");
+const { getWalletSummary } = require("../services/walletService");
 
 const router = express.Router();
 
@@ -13,7 +14,10 @@ router.get("/", auth, async (req, res) => {
   try {
     const { userId } = req.user;
 
-    const user = await User.findById(userId).select("-password -refreshTokens");
+    const [user, walletSummary] = await Promise.all([
+      User.findById(userId).select("-password -refreshTokens"),
+      getWalletSummary(userId).catch(() => null),
+    ]);
 
     if (!user) {
       return res.status(404).json({
@@ -21,14 +25,17 @@ router.get("/", auth, async (req, res) => {
       });
     }
 
-    console.log("✅ Profile:", user.username, "balance:", user.balance);
+    const resolvedBalance = walletSummary?.total_balance ?? user.balance ?? 0;
+
+    console.log("✅ Profile:", user.username, "balance:", resolvedBalance);
 
     return res.json({
       success: true,
       data: {
         _id: user._id,
         username: user.username,
-        walletBalance: user.balance || 1000,
+        walletBalance: resolvedBalance,
+        balance: resolvedBalance,
         role: user.role || "user",
       }
     });
@@ -133,4 +140,3 @@ router.get("/mybets", auth, async (req, res) => {
 });
 
 module.exports = router;
-

